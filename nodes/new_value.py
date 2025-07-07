@@ -3,7 +3,6 @@ from ..nodes.base import FNBaseNode
 from ..sockets import (
     FNSocketBool, FNSocketFloat, FNSocketInt, FNSocketString, FNSocketVector, FNSocketColor
 )
-from .. import uuid_manager
 
 _value_socket_map = {
     'BOOLEAN': 'FNSocketBool',
