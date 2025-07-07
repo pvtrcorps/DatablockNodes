@@ -24,12 +24,12 @@ class FN_join_strings(FNBaseNode, bpy.types.Node):
         while self.outputs:
             self.outputs.remove(self.outputs[-1])
 
-        # Add string input sockets
-        for i in range(self.string_count):
-            self.inputs.new('FNSocketString', f"String {i}")
-        
         # Add separator input
         self.inputs.new('FNSocketString', "Separator")
+
+        # Add string input sockets
+        for i in range(self.string_count):
+            self.inputs.new('FNSocketString', str(i))
 
         # Add output string socket
         self.outputs.new('FNSocketString', "Output")

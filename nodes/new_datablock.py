@@ -63,7 +63,7 @@ class FN_new_datablock(FNBaseNode, bpy.types.Node):
             ('WORKSPACE', 'WorkSpace', ''),
             ('WORLD', 'World', ''),
         ],
-        default='OBJECT',
+        default='SCENE',
         update=lambda self, context: self.update_sockets(context)
     )
 
@@ -136,8 +136,16 @@ class FN_new_datablock(FNBaseNode, bpy.types.Node):
         tree = kwargs.get('tree')
         datablock_name = kwargs.get(self.inputs['Name'].identifier, self.datablock_type.capitalize())
 
+        print(f"\n[FN_new_datablock] Node ID: {self.fn_node_id}")
         map_item = next((item for item in tree.fn_state_map if item.node_id == self.fn_node_id), None)
-        existing_datablock = uuid_manager.find_datablock_by_uuid(map_item.datablock_uuid) if map_item else None
+        print(f"[FN_new_datablock] Map Item found: {map_item is not None}")
+        
+        existing_datablock = None
+        if map_item:
+            print(f"[FN_new_datablock] Map Item Datablock UUID: {map_item.datablock_uuid}")
+            existing_datablock = uuid_manager.find_datablock_by_uuid(map_item.datablock_uuid)
+        
+        print(f"[FN_new_datablock] Existing datablock found: {existing_datablock is not None}")
 
         if existing_datablock:
             if existing_datablock.name != datablock_name:

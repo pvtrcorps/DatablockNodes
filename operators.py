@@ -3,19 +3,6 @@
 import bpy
 from . import reconciler
 
-class FN_OT_evaluate_all(bpy.types.Operator):
-    """Evaluates the active File Nodes tree."""
-    bl_idname = "fn.evaluate_all"
-    bl_label = "Evaluate Node Tree"
-
-    @classmethod
-    def poll(cls, context):
-        return isinstance(context.space_data.edit_tree, bpy.types.NodeTree)
-
-    def execute(self, context):
-        reconciler.execute_tree(context.space_data.edit_tree)
-        return {'FINISHED'}
-
 class FN_OT_recreate_node_setup(bpy.types.Operator):
     """Recreates the current node setup in the active File Nodes tree."""
     bl_idname = "fn.recreate_node_setup"
@@ -100,10 +87,41 @@ class FN_OT_recreate_node_setup(bpy.types.Operator):
         self.report({'INFO'}, "Node setup recreated successfully.")
         return {'FINISHED'}
 
+class FN_OT_execute_node_branch(bpy.types.Operator):
+    """Executes a specific branch of the node tree starting from a given node."""
+    bl_idname = "fn.execute_node_branch"
+    bl_label = "Execute Node Branch"
+
+    node_id: bpy.props.StringProperty(name="Node ID")
+
+    @classmethod
+    def poll(cls, context):
+        return isinstance(context.space_data.edit_tree, bpy.types.NodeTree)
+
+    def execute(self, context):
+        tree = context.space_data.edit_tree
+        if not tree:
+            self.report({'WARNING'}, "No active node tree found.")
+            return {'CANCELLED'}
+
+        target_node = None
+        for node in tree.nodes:
+            if getattr(node, 'fn_node_id', '') == self.node_id:
+                target_node = node
+                break
+        
+        if not target_node:
+            self.report({'ERROR'}, f"Node with ID {self.node_id} not found.")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"Executing branch from node: {target_node.name}")
+        reconciler.execute_tree(tree, start_node=target_node)
+        return {'FINISHED'}
+
 def register():
-    bpy.utils.register_class(FN_OT_evaluate_all)
     bpy.utils.register_class(FN_OT_recreate_node_setup)
+    bpy.utils.register_class(FN_OT_execute_node_branch)
 
 def unregister():
-    bpy.utils.unregister_class(FN_OT_evaluate_all)
     bpy.utils.unregister_class(FN_OT_recreate_node_setup)
+    bpy.utils.unregister_class(FN_OT_execute_node_branch)

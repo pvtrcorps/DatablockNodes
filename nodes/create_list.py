@@ -31,7 +31,7 @@ class FN_create_list(FNBaseNode, bpy.types.Node):
             ('WORLD', 'World', ''),
             ('STRING', 'String', ''),
         ],
-        default='OBJECT',
+        default='SCENE',
         update=lambda self, context: self.update_sockets(context)
     )
 
@@ -71,7 +71,7 @@ class FN_create_list(FNBaseNode, bpy.types.Node):
         }
         
         for i in range(self.item_count): # Use item_count here
-            new_input_socket = self.inputs.new(_socket_map[self.datablock_type], f"Item {i}")
+            new_input_socket = self.inputs.new(_socket_map[self.datablock_type], str(i))
             new_input_socket.is_mutable = False
 
         # Add output list socket

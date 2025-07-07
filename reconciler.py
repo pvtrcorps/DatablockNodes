@@ -5,7 +5,7 @@ from . import uuid_manager
 
 # --- Main Reconciliation Flow ---
 
-def execute_tree(tree: bpy.types.NodeTree):
+def execute_tree(tree: bpy.types.NodeTree, start_node: bpy.types.Node = None):
     """Executes the node tree, handling datablock branching and dependencies centrally."""
     print("--- Starting Node Tree Execution ---")
     _print_node_tree_structure(tree)
@@ -15,8 +15,16 @@ def execute_tree(tree: bpy.types.NodeTree):
     print(f"Phase 1: Collected {len(managed_datablocks_before_execution)} previously managed datablocks.")
 
     print("Phase 2: Executing nodes in topological order...")
+    
+    nodes_to_execute = []
+    if start_node:
+        nodes_to_execute = _get_upstream_nodes(start_node)
+        print(f"  Executing a subset of nodes upstream from '{start_node.name}'. Total nodes: {len(nodes_to_execute)}")
+    else:
+        nodes_to_execute = list(tree.nodes) # Execute all nodes if no start_node is provided
+
     try:
-        sorted_nodes = _topological_sort(tree)
+        sorted_nodes = _topological_sort(nodes_to_execute)
     except ValueError as e:
         print(f"Error: {e}")
         print("--- Node Tree Execution Aborted Due to Cycle ---")
@@ -39,7 +47,7 @@ def execute_tree(tree: bpy.types.NodeTree):
         if output_datablock:
             execution_cache[node.fn_node_id] = output_datablock
 
-    _garbage_collect(tree, managed_datablocks_before_execution)
+    _garbage_collect(tree, managed_datablocks_before_execution, nodes_to_execute)
     print("--- Node Tree Execution Finished ---")
     _print_blender_data_overview()
 
@@ -102,15 +110,13 @@ def _prepare_node_inputs(node: bpy.types.Node, tree: bpy.types.NodeTree, executi
             kwargs[input_socket.identifier] = datablock_to_pass
         else:
             # No copy needed: either not a branch point, or the socket is immutable.
-            kwargs[input_socket.identifier] = datablock_from_cache
+            # If the input socket expects a list, ensure the value is a list.
+            if input_socket.bl_idname.endswith('List') and not isinstance(datablock_from_cache, list):
+                kwargs[input_socket.identifier] = [datablock_from_cache]
+            else:
+                kwargs[input_socket.identifier] = datablock_from_cache
             
-            # If this node was previously managing a copy (because it was a branch),
-            # but now it's not, we must remove its entry from the state map.
-            # This ensures proper garbage collection of the old copy.
-            map_item_index = tree.fn_state_map.find(node.fn_node_id)
-            if map_item_index != -1:
-                print(f"    - Node '{node.name}' is no longer a branching node for '{input_socket.name}'. Removing from state map.")
-                tree.fn_state_map.remove(map_item_index)
+            
 
     kwargs['tree'] = tree
     return kwargs
@@ -119,8 +125,8 @@ def _prepare_node_inputs(node: bpy.types.Node, tree: bpy.types.NodeTree, executi
 
 
 
-def _topological_sort(tree: bpy.types.NodeTree) -> list:
-    """Performs a topological sort on the node tree to determine execution order."""
+def _topological_sort(nodes: list[bpy.types.Node]) -> list:
+    """Performs a topological sort on the given list of nodes to determine execution order."""
     visited = set()      # Nodes whose processing is complete
     visiting = set()     # Nodes currently in the recursion stack (detects cycles)
     result = []          # The topologically sorted list of nodes
@@ -133,7 +139,8 @@ def _topological_sort(tree: bpy.types.NodeTree) -> list:
                 neighbor = link.to_node
                 if neighbor in visiting:
                     raise ValueError(f"Cycle detected in node tree involving node: {neighbor.name}")
-                if neighbor not in visited:
+                # Only visit neighbors that are part of the current execution scope
+                if neighbor in nodes and neighbor not in visited:
                     _dfs_visit(neighbor)
         
         visiting.remove(node)
@@ -141,21 +148,38 @@ def _topological_sort(tree: bpy.types.NodeTree) -> list:
         result.insert(0, node) # Prepend to result to get correct order
 
     # Iterate over all nodes to ensure all components are visited
-    for node in tree.nodes:
+    for node in nodes:
         if node not in visited:
             _dfs_visit(node)
             
     return result
 
+def _get_upstream_nodes(start_node: bpy.types.Node) -> list[bpy.types.Node]:
+    """Traverses the node tree upstream from the start_node to find all connected nodes."""
+    upstream_nodes = set()
+    nodes_to_process = [start_node]
+
+    while nodes_to_process:
+        current_node = nodes_to_process.pop(0)
+        if current_node not in upstream_nodes:
+            upstream_nodes.add(current_node)
+            for input_socket in current_node.inputs:
+                for link in input_socket.links:
+                    nodes_to_process.append(link.from_node)
+    return list(upstream_nodes)
+
 # --- Utility Functions ---
 
 def _get_managed_datablocks(tree: bpy.types.NodeTree) -> set:
     """Returns a set of UUIDs of datablocks currently managed by the tree."""
+    print("  [DEBUG] Current fn_state_map content:")
+    for item in tree.fn_state_map:
+        print(f"    Node ID: {item.node_id}, Datablock UUID: {item.datablock_uuid}")
     return {item.datablock_uuid for item in tree.fn_state_map if hasattr(item, 'datablock_uuid')}
 
 
 
-def _garbage_collect(tree: bpy.types.NodeTree, managed_datablocks_before_execution: set):
+def _garbage_collect(tree: bpy.types.NodeTree, managed_datablocks_before_execution: set, executed_nodes: list[bpy.types.Node]):
     """Removes datablocks that are no longer managed by the node tree.
 
     This works by comparing the set of managed UUIDs from before the execution
@@ -163,7 +187,8 @@ def _garbage_collect(tree: bpy.types.NodeTree, managed_datablocks_before_executi
     """
     print("Phase 3: Garbage collecting...")
     
-    managed_datablocks_after_execution = {item.datablock_uuid for item in tree.fn_state_map if hasattr(item, 'datablock_uuid') and item.node_id in {node.fn_node_id for node in tree.nodes}}
+    executed_node_ids = {node.fn_node_id for node in executed_nodes}
+    managed_datablocks_after_execution = {item.datablock_uuid for item in tree.fn_state_map if hasattr(item, 'datablock_uuid') and item.node_id in executed_node_ids}
     stale_uuids = managed_datablocks_before_execution - managed_datablocks_after_execution
     
     if not stale_uuids:

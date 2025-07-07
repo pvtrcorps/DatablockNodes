@@ -8,8 +8,8 @@ class FN_split_string(FNBaseNode, bpy.types.Node):
 
     def init(self, context):
         FNBaseNode.init(self, context)
-        self.inputs.new('FNSocketString', "String")
         self.inputs.new('FNSocketString', "Separator")
+        self.inputs.new('FNSocketString', "String")
         output_socket = self.outputs.new('FNSocketStringList', "List")
         output_socket.display_shape = 'SQUARE'
 

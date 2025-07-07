@@ -43,7 +43,7 @@ class FN_set_datablock_name(FNBaseNode, bpy.types.Node):
             ('WORKSPACE', 'WorkSpace', ''),
             ('WORLD', 'World', ''),
         ],
-        default='OBJECT',
+        default='SCENE',
         update=lambda self, context: self.update_sockets(context)
     )
 

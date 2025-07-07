@@ -7,33 +7,32 @@ from ..sockets import (
     FNSocketText, FNSocketWorkSpace, FNSocketWorld,
     FNSocketSceneList, FNSocketObjectList, FNSocketCollectionList, FNSocketWorldList,
     FNSocketCameraList, FNSocketImageList, FNSocketLightList, FNSocketMaterialList,
-    FNSocketMeshList, FNSocketNodeTreeList, FNSocketTextList, FNSocketWorkSpaceList
+    FNSocketMeshList, FNSocketNodeTreeList, FNSocketTextList, FNSocketWorkSpaceList, FNSocketStringList
 )
-
-_socket_single = {
-    'SCENE': 'FNSocketScene',
-    'OBJECT': 'FNSocketObject',
-    'COLLECTION': 'FNSocketCollection',
-    'WORLD': 'FNSocketWorld',
-    'CAMERA': 'FNSocketCamera',
-    'IMAGE': 'FNSocketImage',
-    'LIGHT': 'FNSocketLight',
-    'MATERIAL': 'FNSocketMaterial',
-    'MESH': 'FNSocketMesh',
-    'NODETREE': 'FNSocketNodeTree',
-    'TEXT': 'FNSocketText',
-    'WORKSPACE': 'FNSocketWorkSpace',
-    # 'VIEW_LAYER': 'FNSocketViewLayer', # Not yet implemented
-}
 
 class FN_switch(FNBaseNode, bpy.types.Node):
     bl_idname = "FN_switch"
     bl_label = "Switch"
 
-    data_type: bpy.props.EnumProperty(
+    switch_type: bpy.props.EnumProperty(
         name="Type",
         items=[
+            ('BOOLEAN', 'Boolean', 'Switch based on a boolean value'),
+            ('INDEX', 'Index', 'Switch based on an integer index'),
+        ],
+        default='BOOLEAN',
+        update=lambda self, context: self.update_sockets(context)
+    )
+
+    data_type: bpy.props.EnumProperty(
+        name="Data",
+        items=[
+            ('BOOLEAN', 'Boolean', ''),
+            ('FLOAT', 'Float', ''),
+            ('INTEGER', 'Integer', ''),
             ('STRING', 'String', ''),
+            ('VECTOR', 'Vector', ''),
+            ('COLOR', 'Color', ''),
             ('SCENE', 'Scene', ''),
             ('OBJECT', 'Object', ''),
             ('COLLECTION', 'Collection', ''),
@@ -60,24 +59,28 @@ class FN_switch(FNBaseNode, bpy.types.Node):
             ('TEXT_LIST', 'Text List', ''),
             ('WORKSPACE_LIST', 'WorkSpace List', ''),
         ],
-        default='OBJECT',
-        update=lambda self, context: self.update_type(context)
+        default='SCENE',
+        update=lambda self, context: self.update_sockets(context)
     )
 
-    def update_type(self, context):
-        self._update_sockets()
+    item_count: bpy.props.IntProperty(
+        name="Items",
+        default=2,
+        min=0,
+        update=lambda self, context: self.update_sockets(context)
+    )
 
-    def _update_sockets(self):
+    def init(self, context):
+        FNBaseNode.init(self, context)
+        self.update_sockets(context)
+
+    def update_sockets(self, context):
         # Clear existing sockets
         while self.inputs:
             self.inputs.remove(self.inputs[-1])
         while self.outputs:
             self.outputs.remove(self.outputs[-1])
 
-        # Add Switch input (boolean)
-        self.inputs.new('FNSocketBool', "Switch")
-
-        # Add False and True inputs based on selected data_type
         _socket_map = {
             'BOOLEAN': 'FNSocketBool',
             'FLOAT': 'FNSocketFloat',
@@ -112,33 +115,63 @@ class FN_switch(FNBaseNode, bpy.types.Node):
             'WORKSPACE_LIST': 'FNSocketWorkSpaceList',
         }
         socket_type = _socket_map.get(self.data_type)
-        if socket_type:
-            false_socket = self.inputs.new(socket_type, "False")
-            false_socket.is_mutable = False
-            if self.data_type.endswith('_LIST'):
-                false_socket.display_shape = 'SQUARE'
-            true_socket = self.inputs.new(socket_type, "True")
-            true_socket.is_mutable = False
-            if self.data_type.endswith('_LIST'):
-                true_socket.display_shape = 'SQUARE'
 
-            # Add output socket
+        if self.switch_type == 'BOOLEAN':
+            self.inputs.new('FNSocketBool', "Switch")
+            if socket_type:
+                false_socket = self.inputs.new(socket_type, "False")
+                false_socket.is_mutable = False
+                if self.data_type.endswith('_LIST'):
+                    false_socket.display_shape = 'SQUARE'
+                true_socket = self.inputs.new(socket_type, "True")
+                true_socket.is_mutable = False
+                if self.data_type.endswith('_LIST'):
+                    true_socket.display_shape = 'SQUARE'
+
+        elif self.switch_type == 'INDEX':
+            self.inputs.new('FNSocketInt', "Index")
+            if socket_type:
+                for i in range(self.item_count):
+                    item_socket = self.inputs.new(socket_type, str(i))
+                    item_socket.is_mutable = False
+                    if self.data_type.endswith('_LIST'):
+                        item_socket.display_shape = 'SQUARE'
+
+        # Add output socket
+        if socket_type:
             new_output_socket = self.outputs.new(socket_type, "Output")
             if self.data_type.endswith('_LIST'):
                 new_output_socket.display_shape = 'SQUARE'
 
-    def init(self, context):
-        FNBaseNode.init(self, context)
-        self._update_sockets()
-
     def draw_buttons(self, context, layout):
-        layout.prop(self, "data_type", text="Type")
+        layout.prop(self, "switch_type", text="Type")
+        layout.prop(self, "data_type", text="Data")
+        if self.switch_type == 'INDEX':
+            layout.prop(self, "item_count", text="Items")
 
     def execute(self, **kwargs):
-        switch_value = kwargs.get(self.inputs['Switch'].identifier)
-        false_value = kwargs.get(self.inputs['False'].identifier)
-        true_value = kwargs.get(self.inputs['True'].identifier)
+        if self.switch_type == 'BOOLEAN':
+            switch_value = kwargs.get(self.inputs['Switch'].identifier)
+            false_value = kwargs.get(self.inputs['False'].identifier)
+            true_value = kwargs.get(self.inputs['True'].identifier)
+            return true_value if switch_value else false_value
 
-        output_value = true_value if switch_value else false_value
+        elif self.switch_type == 'INDEX':
+            index = kwargs.get(self.inputs['Index'].identifier)
+            if index is None or not isinstance(index, int):
+                print(f"  - Warning: Invalid index provided to {self.name}. Skipping.")
+                return None
 
-        return output_value
+            item_values = []
+            for i in range(self.item_count):
+                item_socket = self.inputs.get(f'Item {i}')
+                if item_socket:
+                    item_values.append(kwargs.get(item_socket.identifier))
+                else:
+                    item_values.append(None)
+
+            if 0 <= index < len(item_values):
+                return item_values[index]
+            else:
+                print(f"  - Warning: Index {index} out of bounds for {self.name} (0 to {len(item_values) - 1}). Returning None.")
+                return None

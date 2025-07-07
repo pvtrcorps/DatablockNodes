@@ -1,7 +1,7 @@
 import bpy
 import uuid
 
-class FNBaseNode:
+class FNBaseNode(bpy.types.Node):
     """Base class for all File Nodes, providing the persistent UUID."""
     
     # This property will store the persistent ID for each node.

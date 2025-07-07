@@ -17,7 +17,7 @@ from nodeitems_utils import NodeCategory, NodeItem, register_node_categories, un
 
 from . import operators
 from . import sockets
-from .nodes import new_datablock, set_datablock_name, link_to_scene, create_list, switch, new_value, link_to_collection, join_strings, split_string, value_to_string, index_switch
+from .nodes import new_datablock, set_datablock_name, link_to_scene, create_list, new_value, link_to_collection, join_strings, split_string, value_to_string, output_scenes, switch, execute, get_item_from_list
 
 # --- State Map Item ---
 class FNStateMapItem(bpy.types.PropertyGroup):
@@ -49,7 +49,7 @@ class DATABLOCK_PT_panel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.operator(operators.FN_OT_evaluate_all.bl_idname)
+        
 
 # --- Node Categories ---
 node_categories = [
@@ -64,7 +64,9 @@ node_categories = [
         NodeItem("FN_join_strings"),
         NodeItem("FN_split_string"),
         NodeItem("FN_value_to_string"),
-        NodeItem("FN_index_switch"),
+        NodeItem("FN_output_scenes"),
+        NodeItem("FN_execute"),
+        NodeItem("FN_get_item_from_list"),
     ]),
 ]
 
@@ -85,7 +87,9 @@ classes = (
     join_strings.FN_join_strings,
     split_string.FN_split_string,
     value_to_string.FN_value_to_string,
-    index_switch.FN_index_switch,
+    output_scenes.FN_output_scenes,
+    execute.FN_execute,
+    get_item_from_list.FN_get_item_from_list,
 )
 
 def register():
