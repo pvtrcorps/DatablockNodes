@@ -72,7 +72,8 @@ class FN_set_datablock_name(FNBaseNode, bpy.types.Node):
         layout.prop(self, "datablock_type", text="Type")
 
     def execute(self, **kwargs):
-        input_datablock = kwargs.get(self.inputs['Datablock'].identifier)
+        input_socket_name = self.datablock_type.capitalize()
+        input_datablock = kwargs.get(self.inputs[input_socket_name].identifier)
         new_name = kwargs.get(self.inputs['New Name'].identifier)
 
         if not input_datablock:
