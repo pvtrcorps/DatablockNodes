@@ -34,7 +34,7 @@ Es el motor central del addon.
     *   Verifica si el socket de entrada del nodo actual es mutable (`input_socket.is_mutable`).
     *   Si ambas condiciones se cumplen, se crea una copia del datablock.
     *   Gestiona la reutilización de copias existentes (si ya se creó una copia para esa rama en una ejecución anterior) o la creación de nuevas copias con `uuid_manager.set_uuid(..., force_new=True)`.
-*   **`_garbage_collect(tree, managed_datablocks_before_execution)`:** Se encarga de eliminar los datablocks de Blender que ya no son gestionados por el árbol de nodos. Esto se logra comparando los UUIDs gestionados antes de la ejecución con los que permanecen activos. Además, limpia las entradas obsoletas en `fn_state_map` que ya no corresponden a nodos existentes en el árbol.
+*   **`_garbage_collect(tree, managed_datablocks_before_execution)`:** Se encarga de eliminar los datablocks de Blender que ya no son gestionados por el árbol de nodos. Esto se logra comparando los UUIDs gestionados antes de la ejecución con los que permanecen activos. Emplea un diccionario de `{tipo: función}` para llamar al método de eliminación correcto (objetos, imágenes, cámaras, luces, grupos de nodos, etc.). Además, limpia las entradas obsoletas en `fn_state_map` que ya no corresponden a nodos existentes en el árbol.
 
 ### 3.2. `uuid_manager.py`
 
