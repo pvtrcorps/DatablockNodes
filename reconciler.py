@@ -170,22 +170,34 @@ def _garbage_collect(tree: bpy.types.NodeTree, managed_datablocks_before_executi
         print("  - No stale datablocks to collect.")
     else:
         # Remove stale datablocks from Blender
+        removal_map = {
+            bpy.types.Object: lambda db: bpy.data.objects.remove(db, do_unlink=True),
+            bpy.types.Scene: lambda db: bpy.data.scenes.remove(db),
+            bpy.types.Mesh: lambda db: bpy.data.meshes.remove(db),
+            bpy.types.Material: lambda db: bpy.data.materials.remove(db),
+            bpy.types.Image: lambda db: bpy.data.images.remove(db),
+            bpy.types.Camera: lambda db: bpy.data.cameras.remove(db),
+            bpy.types.Light: lambda db: bpy.data.lights.remove(db),
+            bpy.types.NodeTree: lambda db: bpy.data.node_groups.remove(db),
+            bpy.types.Text: lambda db: bpy.data.texts.remove(db),
+            bpy.types.Collection: lambda db: bpy.data.collections.remove(db),
+            bpy.types.World: lambda db: bpy.data.worlds.remove(db),
+            bpy.types.WorkSpace: lambda db: bpy.data.workspaces.remove(db),
+        }
+
         for uuid_to_remove in stale_uuids:
             datablock = uuid_manager.find_datablock_by_uuid(uuid_to_remove)
             if datablock:
                 print(f"  - Deleting stale datablock '{datablock.name}' (UUID: {uuid_to_remove})")
                 try:
-                    
-                    
-                    if isinstance(datablock, bpy.types.Object):
-                        bpy.data.objects.remove(datablock, do_unlink=True)
-                    elif isinstance(datablock, bpy.types.Scene):
-                        bpy.data.scenes.remove(datablock)
-                    elif isinstance(datablock, bpy.types.Mesh):
-                        bpy.data.meshes.remove(datablock)
-                    elif isinstance(datablock, bpy.types.Material):
-                        bpy.data.materials.remove(datablock)
-                    # Add more datablock types as needed
+                    removed = False
+                    for datablock_type, removal_func in removal_map.items():
+                        if isinstance(datablock, datablock_type):
+                            removal_func(datablock)
+                            removed = True
+                            break
+                    if not removed:
+                        print(f"  - Warning: No removal handler for type '{type(datablock).__name__}'")
                 except ReferenceError:
                     print(f"  - Warning: Datablock '{datablock.name}' was already removed.")
             else:
