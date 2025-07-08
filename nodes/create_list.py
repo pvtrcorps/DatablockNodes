@@ -47,6 +47,10 @@ class FN_create_list(FNBaseNode, bpy.types.Node):
         self.update_sockets(context)
 
     def update_sockets(self, context):
+        # --- Update Button Visibility ---
+        value_types = ['STRING']
+        self.manages_scene_datablock = self.datablock_type not in value_types
+
         # Clear existing sockets
         while self.inputs:
             self.inputs.remove(self.inputs[-1])
@@ -112,5 +116,4 @@ class FN_create_list(FNBaseNode, bpy.types.Node):
                 # If not linked, use the default value of the socket
                 list_of_items.append(input_socket.default_value)
         
-        print(f"  Node {self.name}: Created list with {len(list_of_items)} items.")
-        return list_of_items
+        return {self.outputs['List'].identifier: list_of_items}

@@ -92,6 +92,9 @@ class FN_get_item_from_list(FNBaseNode, bpy.types.Node):
         self.update_sockets(context)
 
     def update_sockets(self, context):
+        # --- Update Button Visibility ---
+        self.manages_scene_datablock = self.list_type != 'STRING'
+
         # Clear existing sockets
         while self.inputs:
             self.inputs.remove(self.inputs[-1])
@@ -138,21 +141,21 @@ class FN_get_item_from_list(FNBaseNode, bpy.types.Node):
                 return None
             
             if 0 <= index < len(input_list):
-                return input_list[index]
+                return {self.outputs['Item'].identifier: input_list[index]}
             else:
                 print(f"  - Warning: Index {index} out of bounds for {self.name} (0 to {len(input_list) - 1}). Returning None.")
-                return None
+                return {self.outputs['Item'].identifier: None}
 
         elif self.selection_mode == 'NAME':
             name_to_find = kwargs.get(self.inputs['Name'].identifier)
             if name_to_find is None or not isinstance(name_to_find, str):
                 print(f"  - Warning: Invalid name provided to {self.name}. Returning None.")
-                return None
+                return {self.outputs['Item'].identifier: None}
 
             for item in input_list:
                 if hasattr(item, 'name') and item.name == name_to_find:
-                    return item
+                    return {self.outputs['Item'].identifier: item}
             print(f"  - Warning: Item with name '{name_to_find}' not found in the list. Returning None.")
-            return None
+            return {self.outputs['Item'].identifier: None}
 
-        return None
+        return {self.outputs['Item'].identifier: None}

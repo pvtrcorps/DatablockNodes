@@ -7,9 +7,27 @@ def _color(r,g,b): return (r,g,b,1.0)
 # expose its 'value' property so users can pick a value directly from the node.
 def _draw_value_socket(sock, layout, text, icon='NONE'):
     show = getattr(sock, 'show_selector', True)
-    if sock.is_output or sock.is_linked or not show:
+    
+    if sock.is_output:
+        # For output sockets, always draw text, then icon, then activate button
+        row = layout.row(align=True)
+        row.label(text=text or sock.name)
+        # Always draw the icon if provided, regardless of whether it's a value socket or not.
+        # List sockets set their icon in their own draw method, so we need to ensure it's drawn here.
+        if icon != 'NONE':
+            row.label(text="", icon=icon)
+        
+        # Only show activate button if the socket manages a scene datablock
+        if sock.node.manages_scene_datablock:
+            op = row.operator("fn.activate_socket", text="", icon='RADIOBUT_ON' if sock.is_active else 'RADIOBUT_OFF', emboss=False)
+            op.node_id = sock.node.fn_node_id
+            op.socket_identifier = sock.identifier
+
+    elif sock.is_linked or not show:
+        # For linked input sockets or hidden selectors, draw icon then text
         layout.label(text=text or sock.name, icon=icon)
     else:
+        # For unlinked input sockets with selector, draw icon then property
         if hasattr(sock, 'default_value'):
             layout.prop(sock, 'default_value', text=text or sock.name, icon=icon)
         elif hasattr(sock, 'value'): # For PointerProperties like Object, Scene, etc.
@@ -26,6 +44,11 @@ class FN_SocketBase(bpy.types.NodeSocket):
         default=False
     )
     show_selector: bpy.props.BoolProperty(default=True)
+    is_active: bpy.props.BoolProperty(
+        name="Is Active",
+        description="If true, this socket's output is synchronized with the scene.",
+        default=False
+    )
 
     def draw(self, context, layout, node, text):
         _draw_value_socket(self, layout, text, self.bl_icon if hasattr(self, 'bl_icon') else 'NONE')
@@ -248,7 +271,7 @@ class FNSocketSceneList(FN_SocketBase):
     bl_label = "Scene List"
     display_shape = 'SQUARE'
     def draw(self, context, layout, node, text):
-        layout.label(text=text or self.name, icon='SCENE_DATA')
+        _draw_value_socket(self, layout, text, 'SCENE_DATA')
     def draw_color(self, context, node):
         return _color(1.0, 1.0, 1.0)
 
@@ -257,7 +280,7 @@ class FNSocketObjectList(FN_SocketBase):
     bl_label = "Object List"
     display_shape = 'SQUARE'
     def draw(self, context, layout, node, text):
-        layout.label(text=text or self.name, icon='OBJECT_DATA')
+        _draw_value_socket(self, layout, text, 'OBJECT_DATA')
     def draw_color(self, context, node):
         return _color(0.9608, 0.5529, 0.0824)
 
@@ -266,7 +289,7 @@ class FNSocketCollectionList(FN_SocketBase):
     bl_label = "Collection List"
     display_shape = 'SQUARE'
     def draw(self, context, layout, node, text):
-        layout.label(text=text or self.name, icon='OUTLINER_COLLECTION')
+        _draw_value_socket(self, layout, text, 'OUTLINER_COLLECTION')
     def draw_color(self, context, node):
         return _color(1.0, 1.0, 1.0)
 
@@ -275,7 +298,7 @@ class FNSocketWorldList(FN_SocketBase):
     bl_label = "World List"
     display_shape = 'SQUARE'
     def draw(self, context, layout, node, text):
-        layout.label(text=text or self.name, icon='WORLD')
+        _draw_value_socket(self, layout, text, 'WORLD')
     def draw_color(self, context, node):
         return _color(0.8, 0.8, 0.3)
 
@@ -284,7 +307,7 @@ class FNSocketCameraList(FN_SocketBase):
     bl_label = "Camera List"
     display_shape = 'SQUARE'
     def draw(self, context, layout, node, text):
-        layout.label(text=text or self.name, icon='CAMERA_DATA')
+        _draw_value_socket(self, layout, text, 'CAMERA_DATA')
     def draw_color(self, context, node):
         return _color(0.8, 0.6, 0.4)
 
@@ -293,7 +316,7 @@ class FNSocketImageList(FN_SocketBase):
     bl_label = "Image List"
     display_shape = 'SQUARE'
     def draw(self, context, layout, node, text):
-        layout.label(text=text or self.name, icon='IMAGE_DATA')
+        _draw_value_socket(self, layout, text, 'IMAGE_DATA')
     def draw_color(self, context, node):
         return _color(0.6, 0.6, 0.6)
 
@@ -302,7 +325,7 @@ class FNSocketLightList(FN_SocketBase):
     bl_label = "Light List"
     display_shape = 'SQUARE'
     def draw(self, context, layout, node, text):
-        layout.label(text=text or self.name, icon='LIGHT_DATA')
+        _draw_value_socket(self, layout, text, 'LIGHT_DATA')
     def draw_color(self, context, node):
         return _color(1.0, 0.9, 0.3)
 
@@ -311,7 +334,7 @@ class FNSocketMaterialList(FN_SocketBase):
     bl_label = "Material List"
     display_shape = 'SQUARE'
     def draw(self, context, layout, node, text):
-        layout.label(text=text or self.name, icon='MATERIAL_DATA')
+        _draw_value_socket(self, layout, text, 'MATERIAL_DATA')
     def draw_color(self, context, node):
         return _color(0.8863, 0.3137, 0.3137)
 
@@ -320,7 +343,7 @@ class FNSocketMeshList(FN_SocketBase):
     bl_label = "Mesh List"
     display_shape = 'SQUARE'
     def draw(self, context, layout, node, text):
-        layout.label(text=text or self.name, icon='MESH_DATA')
+        _draw_value_socket(self, layout, text, 'MESH_DATA')
     def draw_color(self, context, node):
         return _color(0.2118, 0.7529, 0.4471)
 
@@ -329,7 +352,7 @@ class FNSocketNodeTreeList(FN_SocketBase):
     bl_label = "Node Tree List"
     display_shape = 'SQUARE'
     def draw(self, context, layout, node, text):
-        layout.label(text=text or self.name, icon='NODETREE')
+        _draw_value_socket(self, layout, text, 'NODETREE')
     def draw_color(self, context, node):
         return _color(0.7, 0.9, 0.7)
 
@@ -338,7 +361,7 @@ class FNSocketTextList(FN_SocketBase):
     bl_label = "Text List"
     display_shape = 'SQUARE'
     def draw(self, context, layout, node, text):
-        layout.label(text=text or self.name, icon='TEXT')
+        _draw_value_socket(self, layout, text, 'TEXT')
     def draw_color(self, context, node):
         return _color(0.9, 0.9, 0.6)
 
@@ -347,7 +370,7 @@ class FNSocketWorkSpaceList(FN_SocketBase):
     bl_label = "WorkSpace List"
     display_shape = 'SQUARE'
     def draw(self, context, layout, node, text):
-        layout.label(text=text or self.name, icon='WORKSPACE')
+        _draw_value_socket(self, layout, text, 'WORKSPACE')
     def draw_color(self, context, node):
         return _color(0.5, 0.7, 0.9)
 
@@ -358,7 +381,7 @@ class FNSocketStringList(FN_SocketBase):
     display_shape = 'SQUARE'
     show_selector: bpy.props.BoolProperty(default=False)
     def draw(self, context, layout, node, text):
-        layout.label(text=text or self.name)
+        _draw_value_socket(self, layout, text, 'NONE')
     def draw_color(self, context, node):
         return _color(0.3137, 0.6667, 1.0)
 
@@ -368,25 +391,13 @@ class FNSocketViewLayerList(FN_SocketBase):
     is_mutable: bpy.props.BoolProperty(default=True)
     display_shape = 'SQUARE'
     def draw(self, context, layout, node, text):
-        layout.label(text=text or self.name, icon='RENDERLAYERS')
+        _draw_value_socket(self, layout, text, 'RENDERLAYERS')
     def draw_color(self, context, node):
         return _color(0.6, 0.6, 0.6)
     # Blender does not support PointerProperty for ViewLayer, store the name instead.
     value: bpy.props.StringProperty()
 
-class FNSocketExecute(FN_SocketBase):
-    bl_idname = 'FNSocketExecute'
-    bl_label = "Execute Socket"
-    is_mutable: bpy.props.BoolProperty(default=False) # Not modifying a datablock, just triggering
-    
-    def draw(self, context, layout, node, text):
-        # Draw a button that triggers the execution of the branch from this node
-        row = layout.row(align=True)
-        op = row.operator("fn.execute_node_branch", text=text, icon='PLAY')
-        op.node_id = node.fn_node_id
 
-    def draw_color(self, context, node):
-        return _color(1.0, 0.5, 0.0)
 
 _all_sockets = (
     FNSocketString,
@@ -421,7 +432,6 @@ _all_sockets = (
     FNSocketWorkSpaceList,
     FNSocketViewLayerList,
     FNSocketStringList,
-    FNSocketExecute,
 )
 
 def register():

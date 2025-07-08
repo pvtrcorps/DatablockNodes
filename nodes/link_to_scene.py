@@ -30,6 +30,9 @@ class FN_link_to_scene(FNBaseNode, bpy.types.Node):
 
         self.outputs.new('FNSocketScene', "Scene")
 
+    def draw_buttons(self, context, layout):
+        pass
+
     def execute(self, **kwargs):
         target_scene = kwargs.get(self.inputs['Scene'].identifier)
         collections_to_link = kwargs.get(self.inputs['Collections'].identifier)
@@ -67,4 +70,4 @@ class FN_link_to_scene(FNBaseNode, bpy.types.Node):
                 else:
                     print(f"  - Warning: An item provided to {self.name} (Objects) is not a valid object. Skipping.")
         
-        return target_scene
+        return {self.outputs[0].identifier: target_scene}

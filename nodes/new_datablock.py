@@ -137,13 +137,15 @@ class FN_new_datablock(FNBaseNode, bpy.types.Node):
         datablock_name = kwargs.get(self.inputs['Name'].identifier, self.datablock_type.capitalize())
 
         print(f"\n[FN_new_datablock] Node ID: {self.fn_node_id}")
-        map_item = next((item for item in tree.fn_state_map if item.node_id == self.fn_node_id), None)
+        output_socket_identifier = self.outputs[0].identifier
+        map_item = next((item for item in tree.fn_state_map if item.node_id == self.fn_node_id and item.socket_identifier == output_socket_identifier), None)
         print(f"[FN_new_datablock] Map Item found: {map_item is not None}")
         
         existing_datablock = None
-        if map_item:
-            print(f"[FN_new_datablock] Map Item Datablock UUID: {map_item.datablock_uuid}")
-            existing_datablock = uuid_manager.find_datablock_by_uuid(map_item.datablock_uuid)
+        if map_item and map_item.datablock_uuids:
+            # A New Datablock node should only manage one datablock, so we take the first UUID
+            existing_uuid = map_item.datablock_uuids.split(',')[0]
+            existing_datablock = uuid_manager.find_datablock_by_uuid(existing_uuid)
         
         print(f"[FN_new_datablock] Existing datablock found: {existing_datablock is not None}")
 
@@ -151,7 +153,7 @@ class FN_new_datablock(FNBaseNode, bpy.types.Node):
             if existing_datablock.name != datablock_name:
                 existing_datablock.name = datablock_name
                 print(f"  - Updated {self.datablock_type.lower()} name to: '{existing_datablock.name}'")
-            return existing_datablock
+            return {self.outputs[0].identifier: existing_datablock}
         else:
             creation_func = _datablock_creation_map.get(self.datablock_type)
             if creation_func:
@@ -170,12 +172,20 @@ class FN_new_datablock(FNBaseNode, bpy.types.Node):
                 uuid_manager.set_uuid(new_datablock)
                 print(f"  - Created new {self.datablock_type.capitalize()}: {new_datablock.name}")
 
-                if map_item:
-                    map_item.datablock_uuid = uuid_manager.get_uuid(new_datablock)
-                else:
+                # Update fn_state_map with the new datablock's UUID, associated with the output socket
+                output_socket_identifier = self.outputs[0].identifier
+                found_map_item = False
+                for item in tree.fn_state_map:
+                    if item.node_id == self.fn_node_id and item.socket_identifier == output_socket_identifier:
+                        item.datablock_uuids = uuid_manager.get_uuid(new_datablock)
+                        found_map_item = True
+                        break
+                
+                if not found_map_item:
                     new_map_item = tree.fn_state_map.add()
                     new_map_item.node_id = self.fn_node_id
-                    new_map_item.datablock_uuid = uuid_manager.get_uuid(new_datablock)
+                    new_map_item.socket_identifier = output_socket_identifier
+                    new_map_item.datablock_uuids = uuid_manager.get_uuid(new_datablock)
                 
-                return new_datablock
-            return None
+                return {output_socket_identifier: new_datablock}
+            return {}

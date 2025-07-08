@@ -29,6 +29,9 @@ class FN_link_to_collection(FNBaseNode, bpy.types.Node):
 
         self.outputs.new('FNSocketCollection', "Collection")
 
+    def draw_buttons(self, context, layout):
+        pass
+
     def execute(self, **kwargs):
         target_collection = kwargs.get(self.inputs['Collection'].identifier)
         collections_to_link = kwargs.get(self.inputs['Collections'].identifier)
@@ -66,4 +69,4 @@ class FN_link_to_collection(FNBaseNode, bpy.types.Node):
                 else:
                     print(f"  - Warning: An item provided to {self.name} (Objects) is not a valid object. Skipping.")
         
-        return target_collection
+        return {self.outputs[0].identifier: target_collection}

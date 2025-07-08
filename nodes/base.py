@@ -11,6 +11,12 @@ class FNBaseNode(bpy.types.Node):
         default="",
     )
 
+    manages_scene_datablock: bpy.props.BoolProperty(
+        name="Manages Scene Datablock",
+        description="Controls whether this node can directly affect the Blender scene, thus showing the activate button.",
+        default=True
+    )
+
     def init(self, context):
         """Assign a unique ID when the node is created."""
         if not self.fn_node_id:

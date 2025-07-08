@@ -24,6 +24,7 @@ class FN_value_to_string(FNBaseNode, bpy.types.Node):
 
     def init(self, context):
         FNBaseNode.init(self, context)
+        self.manages_scene_datablock = False
         self.update_sockets(context)
 
     def update_sockets(self, context):
@@ -53,6 +54,6 @@ class FN_value_to_string(FNBaseNode, bpy.types.Node):
         input_value = kwargs.get(self.inputs['Value'].identifier)
 
         if input_value is None:
-            return ""
+            return {self.outputs['String'].identifier: ""}
 
-        return str(input_value)
+        return {self.outputs['String'].identifier: str(input_value)}

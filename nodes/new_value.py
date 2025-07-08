@@ -41,6 +41,7 @@ class FN_new_value(FNBaseNode, bpy.types.Node):
 
     def init(self, context):
         FNBaseNode.init(self, context)
+        self.manages_scene_datablock = False
         self.update_sockets(context)
 
     def update_sockets(self, context):
@@ -72,16 +73,18 @@ class FN_new_value(FNBaseNode, bpy.types.Node):
 
     def execute(self, **kwargs):
         # Return the appropriate value based on selected type
+        output_value = None
         if self.value_type == 'BOOLEAN':
-            return self.bool_value
+            output_value = self.bool_value
         elif self.value_type == 'FLOAT':
-            return self.float_value
+            output_value = self.float_value
         elif self.value_type == 'INTEGER':
-            return self.int_value
+            output_value = self.int_value
         elif self.value_type == 'STRING':
-            return self.string_value
+            output_value = self.string_value
         elif self.value_type == 'VECTOR':
-            return self.vector_value
+            output_value = self.vector_value
         elif self.value_type == 'COLOR':
-            return self.color_value
-        return None
+            output_value = self.color_value
+        
+        return {self.outputs['Value'].identifier: output_value}

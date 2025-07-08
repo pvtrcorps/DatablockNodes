@@ -8,16 +8,20 @@ class FN_split_string(FNBaseNode, bpy.types.Node):
 
     def init(self, context):
         FNBaseNode.init(self, context)
+        self.manages_scene_datablock = False
         self.inputs.new('FNSocketString', "Separator")
         self.inputs.new('FNSocketString', "String")
         output_socket = self.outputs.new('FNSocketStringList', "List")
         output_socket.display_shape = 'SQUARE'
+
+    def draw_buttons(self, context, layout):
+        pass
 
     def execute(self, **kwargs):
         input_string = kwargs.get(self.inputs['String'].identifier, "")
         separator = kwargs.get(self.inputs['Separator'].identifier, " ") # Default to space if no separator
 
         if not input_string:
-            return []
+            return {self.outputs['List'].identifier: []}
 
-        return input_string.split(separator)
+        return {self.outputs['List'].identifier: input_string.split(separator)}

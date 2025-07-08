@@ -17,12 +17,14 @@ from nodeitems_utils import NodeCategory, NodeItem, register_node_categories, un
 
 from . import operators
 from . import sockets
-from .nodes import new_datablock, set_datablock_name, link_to_scene, create_list, new_value, link_to_collection, join_strings, split_string, value_to_string, output_scenes, switch, execute, get_item_from_list
+from . import properties # New import
+from .nodes import new_datablock, set_datablock_name, link_to_scene, create_list, new_value, link_to_collection, join_strings, split_string, value_to_string, switch, get_item_from_list, import_datablock, read_file, write_file, set_datablock_properties, set_datablock_cycles_properties
 
 # --- State Map Item ---
 class FNStateMapItem(bpy.types.PropertyGroup):
     node_id: bpy.props.StringProperty()
-    datablock_uuid: bpy.props.StringProperty()
+    socket_identifier: bpy.props.StringProperty() # New: Identifier of the socket this item belongs to
+    datablock_uuids: bpy.props.StringProperty()
 
 # --- Node Tree ---
 class DatablockTree(bpy.types.NodeTree):
@@ -55,6 +57,7 @@ class DATABLOCK_PT_panel(bpy.types.Panel):
 node_categories = [
     NodeCategory("DATABLOCK_NODES", "Nodes", items=[
         NodeItem("FN_new_datablock"),
+        NodeItem("FN_import_datablock"),
         NodeItem("FN_new_value"),
         NodeItem("FN_set_datablock_name"),
         NodeItem("FN_link_to_scene"),
@@ -64,9 +67,11 @@ node_categories = [
         NodeItem("FN_join_strings"),
         NodeItem("FN_split_string"),
         NodeItem("FN_value_to_string"),
-        NodeItem("FN_output_scenes"),
-        NodeItem("FN_execute"),
         NodeItem("FN_get_item_from_list"),
+        NodeItem("FN_read_file"),
+        NodeItem("FN_write_file"),
+        NodeItem("FN_set_datablock_properties"),
+        NodeItem("FN_set_datablock_cycles_properties"),
     ]),
 ]
 
@@ -78,6 +83,7 @@ classes = (
     
     DATABLOCK_PT_panel,
     new_datablock.FN_new_datablock,
+    import_datablock.FN_import_datablock,
     new_value.FN_new_value,
     set_datablock_name.FN_set_datablock_name,
     link_to_scene.FN_link_to_scene,
@@ -87,14 +93,17 @@ classes = (
     join_strings.FN_join_strings,
     split_string.FN_split_string,
     value_to_string.FN_value_to_string,
-    output_scenes.FN_output_scenes,
-    execute.FN_execute,
     get_item_from_list.FN_get_item_from_list,
+    read_file.FN_read_file,
+    write_file.FN_write_file,
+    set_datablock_properties.FN_set_datablock_properties,
+    set_datablock_cycles_properties.FN_set_datablock_cycles_properties,
 )
 
 def register():
     operators.register()
     sockets.register()
+    properties.register() # New registration
     for cls in classes:
         bpy.utils.register_class(cls)
     
@@ -106,6 +115,7 @@ def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
     sockets.unregister()
+    properties.unregister() # New unregistration
     operators.unregister()
 
 if __name__ == "__main__":

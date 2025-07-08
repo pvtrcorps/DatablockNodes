@@ -85,6 +85,4 @@ class FN_set_datablock_name(FNBaseNode, bpy.types.Node):
             return input_datablock # Return datablock unmodified
 
         input_datablock.name = new_name
-        print(f"  - Set {self.datablock_type.lower()} name to: '{input_datablock.name}'")
-
-        return input_datablock
+        return {self.outputs[0].identifier: input_datablock}

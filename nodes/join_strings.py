@@ -15,6 +15,7 @@ class FN_join_strings(FNBaseNode, bpy.types.Node):
 
     def init(self, context):
         FNBaseNode.init(self, context)
+        self.manages_scene_datablock = False
         self.update_sockets(context)
 
     def update_sockets(self, context):
@@ -42,8 +43,8 @@ class FN_join_strings(FNBaseNode, bpy.types.Node):
         
         joined_string = []
         for i in range(self.string_count):
-            input_string = kwargs.get(self.inputs[f'String {i}'].identifier)
+            input_string = kwargs.get(self.inputs[str(i)].identifier)
             if input_string is not None:
                 joined_string.append(str(input_string))
         
-        return separator.join(joined_string)
+        return {self.outputs['Output'].identifier: separator.join(joined_string)}

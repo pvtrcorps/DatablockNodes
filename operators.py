@@ -1,127 +1,149 @@
-"""Operators for the File Nodes addon."""
 
 import bpy
+import os
 from . import reconciler
 
-class FN_OT_recreate_node_setup(bpy.types.Operator):
-    """Recreates the current node setup in the active File Nodes tree."""
-    bl_idname = "fn.recreate_node_setup"
-    bl_label = "Recreate Node Setup"
+class FN_OT_activate_socket(bpy.types.Operator):
+    """Activates a socket and triggers the scene synchronization."""
+    bl_idname = "fn.activate_socket"
+    bl_label = "Activate Socket"
 
-    @classmethod
-    def poll(cls, context):
-        return isinstance(context.space_data.edit_tree, bpy.types.NodeTree)
-
-    def execute(self, context):
-        tree = context.space_data.edit_tree
-        if not tree:
-            self.report({'WARNING'}, "No active node tree found.")
-            return {'CANCELLED'}
-
-        self.report({'INFO'}, "Recreating node setup...")
-
-        # 1. Store current node setup
-        node_data = []
-        link_data = []
-
-        # Store nodes and their basic properties
-        for node in tree.nodes:
-            node_info = {
-                'bl_idname': node.bl_idname,
-                'name': node.name,
-                'location': (node.location.x, node.location.y),
-                'fn_node_id': getattr(node, 'fn_node_id', ''),
-                'properties': {}
-            }
-            # Store input socket values if not linked and has a 'value' attribute
-            for input_socket in node.inputs:
-                if not input_socket.is_linked and hasattr(input_socket, 'value'):
-                    node_info['properties'][input_socket.identifier] = input_socket.value
-            node_data.append(node_info)
-
-        # Store links
-        for link in tree.links:
-            link_info = {
-                'from_node_name': link.from_node.name,
-                'from_socket_identifier': link.from_socket.identifier,
-                'to_node_name': link.to_node.name,
-                'to_socket_identifier': link.to_socket.identifier,
-            }
-            link_data.append(link_info)
-
-        # 2. Clear existing nodes
-        tree.nodes.clear()
-
-        # 3. Recreate nodes
-        # Create a mapping from old node names to new node instances
-        new_nodes_map = {}
-        for node_info in node_data:
-            new_node = tree.nodes.new(node_info['bl_idname'])
-            new_node.name = node_info['name']
-            new_node.location = node_info['location']
-            
-
-            # Restore input socket values
-            for prop_id, prop_value in node_info['properties'].items():
-                if prop_id in new_node.inputs:
-                    new_node.inputs[prop_id].value = prop_value
-
-            new_nodes_map[node_info['name']] = new_node
-
-        # 4. Recreate links
-        for link_info in link_data:
-            from_node = new_nodes_map.get(link_info['from_node_name'])
-            to_node = new_nodes_map.get(link_info['to_node_name'])
-
-            if from_node and to_node:
-                from_socket = from_node.outputs.get(link_info['from_socket_identifier'])
-                to_socket = to_node.inputs.get(link_info['to_socket_identifier'])
-
-                if from_socket and to_socket:
-                    tree.links.new(from_socket, to_socket)
-                else:
-                    self.report({'WARNING'}, f"Could not find sockets for link: {link_info}")
-            else:
-                self.report({'WARNING'}, f"Could not find nodes for link: {link_info}")
-
-        self.report({'INFO'}, "Node setup recreated successfully.")
-        return {'FINISHED'}
-
-class FN_OT_execute_node_branch(bpy.types.Operator):
-    """Executes a specific branch of the node tree starting from a given node."""
-    bl_idname = "fn.execute_node_branch"
-    bl_label = "Execute Node Branch"
-
-    node_id: bpy.props.StringProperty(name="Node ID")
-
-    @classmethod
-    def poll(cls, context):
-        return isinstance(context.space_data.edit_tree, bpy.types.NodeTree)
+    node_id: bpy.props.StringProperty()
+    socket_identifier: bpy.props.StringProperty()
 
     def execute(self, context):
-        tree = context.space_data.edit_tree
-        if not tree:
-            self.report({'WARNING'}, "No active node tree found.")
-            return {'CANCELLED'}
+        node_tree = context.space_data.edit_tree
+        target_node = next((n for n in node_tree.nodes if n.fn_node_id == self.node_id), None)
 
-        target_node = None
-        for node in tree.nodes:
-            if getattr(node, 'fn_node_id', '') == self.node_id:
-                target_node = node
-                break
-        
         if not target_node:
             self.report({'ERROR'}, f"Node with ID {self.node_id} not found.")
             return {'CANCELLED'}
 
-        self.report({'INFO'}, f"Executing branch from node: {target_node.name}")
-        reconciler.execute_tree(tree, start_node=target_node)
+        target_socket = next((s for s in target_node.outputs if s.identifier == self.socket_identifier), None)
+
+        if not target_socket:
+            self.report({'ERROR'}, f"Socket with identifier {self.socket_identifier} not found on node {self.node_id}.")
+            return {'CANCELLED'}
+
+        # Deactivate all other active sockets in the tree
+        for node in node_tree.nodes:
+            for sock in node.outputs:
+                if sock.is_active and sock.node.fn_node_id != self.node_id or (sock.node.fn_node_id == self.node_id and sock.identifier != self.socket_identifier):
+                    sock.is_active = False
+
+        # Set the active property on the target socket
+        target_socket.is_active = True
+
+        # Call the reconciler
+        reconciler.sync_active_socket(node_tree, target_socket)
+
         return {'FINISHED'}
 
+class FN_OT_write_file(bpy.types.Operator):
+    """Executes the write file operation from a node."""
+    bl_idname = "fn.write_file"
+    bl_label = "Write File Node"
+
+    node_id: bpy.props.StringProperty()
+
+    def execute(self, context):
+        node_tree = context.space_data.edit_tree
+        write_node = next((n for n in node_tree.nodes if n.fn_node_id == self.node_id), None)
+
+        if not write_node:
+            self.report({'ERROR'}, f"Node with ID {self.node_id} not found.")
+            return {'CANCELLED'}
+
+        # --- 1. Evaluate the node tree to get the inputs ---
+        # We use a dedicated evaluation function for this action.
+        evaluated_output = reconciler.evaluate_node_for_output(node_tree, write_node)
+        file_path = evaluated_output["inputs"].get(write_node.inputs["File Path"].identifier)
+        overwrite = evaluated_output["inputs"].get(write_node.inputs["Overwrite"].identifier)
+        datablocks_to_write = evaluated_output["datablocks"]
+
+        if not datablocks_to_write:
+            self.report({'WARNING'}, "No datablocks to write.")
+            return {'CANCELLED'}
+
+        # --- 2. Check for overwrite ---
+        if os.path.exists(file_path) and not overwrite:
+            self.report({'ERROR'}, f"File exists and overwrite is off: {file_path}")
+            return {'CANCELLED'}
+
+        # --- 3. Write to file ---
+        try:
+            bpy.data.libraries.write(file_path, datablocks_to_write)
+            self.report({'INFO'}, f"Successfully wrote {len(datablocks_to_write)} datablocks to {file_path}")
+        except Exception as e:
+            self.report({'ERROR'}, f"Failed to write file: {e}")
+            return {'CANCELLED'}
+
+        return {'FINISHED'}
+
+class FN_OT_add_property_to_set(bpy.types.Operator):
+    """Adds a property to the Set Datablock Properties node."""
+    bl_idname = "fn.add_property_to_set"
+    bl_label = "Add Property"
+
+    node_id: bpy.props.StringProperty()
+    datablock_type: bpy.props.StringProperty()
+    is_cycles_property: bpy.props.BoolProperty(default=False)
+
+    def execute(self, context):
+        node_tree = context.space_data.edit_tree
+        node = next((n for n in node_tree.nodes if n.fn_node_id == self.node_id), None)
+
+        if not node:
+            self.report({'ERROR'}, "Node not found.")
+            return {'CANCELLED'}
+
+        prop_item = node.properties_to_set.add()
+        prop_item.name = "New Property"
+        # Default socket type, will be updated when rna_path is set
+        prop_item.socket_type = "STRING"
+
+        # Force update sockets to reflect the new property
+        node.update_sockets(context)
+        return {'FINISHED'}
+
+class FN_OT_remove_property_from_set(bpy.types.Operator):
+    """Removes a property from the Set Datablock Properties node."""
+    bl_idname = "fn.remove_property_from_set"
+    bl_label = "Remove Property"
+
+    node_id: bpy.props.StringProperty()
+    property_index: bpy.props.IntProperty()
+
+    def execute(self, context):
+        node_tree = context.space_data.edit_tree
+        node = next((n for n in node_tree.nodes if n.fn_node_id == self.node_id), None)
+
+        if not node:
+            self.report({'ERROR'}, "Node not found.")
+            return {'CANCELLED'}
+
+        node.properties_to_set.remove(self.property_index)
+
+        # Force update sockets to reflect the removed property
+        node.update_sockets(context)
+        return {'FINISHED'}
+
+
+_all_operators = (
+    FN_OT_activate_socket,
+    FN_OT_write_file,
+    FN_OT_add_property_to_set,
+    FN_OT_remove_property_from_set,
+)
+
 def register():
-    bpy.utils.register_class(FN_OT_recreate_node_setup)
-    bpy.utils.register_class(FN_OT_execute_node_branch)
+    print("Registering operators...")
+    for cls in _all_operators:
+        bpy.utils.register_class(cls)
+        print(f"  Registered: {cls.bl_idname}")
 
 def unregister():
-    bpy.utils.unregister_class(FN_OT_recreate_node_setup)
-    bpy.utils.unregister_class(FN_OT_execute_node_branch)
+    print("Unregistering operators...")
+    for cls in reversed(_all_operators):
+        bpy.utils.unregister_class(cls)
+        print(f"  Unregistered: {cls.bl_idname}")

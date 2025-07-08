@@ -75,6 +75,10 @@ class FN_switch(FNBaseNode, bpy.types.Node):
         self.update_sockets(context)
 
     def update_sockets(self, context):
+        # --- Update Button Visibility ---
+        value_types = ['BOOLEAN', 'FLOAT', 'INTEGER', 'STRING', 'VECTOR', 'COLOR', 'STRING_LIST']
+        self.manages_scene_datablock = self.data_type not in value_types
+
         # Clear existing sockets
         while self.inputs:
             self.inputs.remove(self.inputs[-1])
@@ -154,24 +158,25 @@ class FN_switch(FNBaseNode, bpy.types.Node):
             switch_value = kwargs.get(self.inputs['Switch'].identifier)
             false_value = kwargs.get(self.inputs['False'].identifier)
             true_value = kwargs.get(self.inputs['True'].identifier)
-            return true_value if switch_value else false_value
+            output_value = true_value if switch_value else false_value
+            return {self.outputs['Output'].identifier: output_value}
 
         elif self.switch_type == 'INDEX':
             index = kwargs.get(self.inputs['Index'].identifier)
             if index is None or not isinstance(index, int):
                 print(f"  - Warning: Invalid index provided to {self.name}. Skipping.")
-                return None
+                return {self.outputs['Output'].identifier: None}
 
             item_values = []
             for i in range(self.item_count):
-                item_socket = self.inputs.get(f'Item {i}')
+                item_socket = self.inputs.get(str(i))
                 if item_socket:
                     item_values.append(kwargs.get(item_socket.identifier))
                 else:
                     item_values.append(None)
 
             if 0 <= index < len(item_values):
-                return item_values[index]
+                return {self.outputs['Output'].identifier: item_values[index]}
             else:
                 print(f"  - Warning: Index {index} out of bounds for {self.name} (0 to {len(item_values) - 1}). Returning None.")
-                return None
+                return {self.outputs['Output'].identifier: None}
