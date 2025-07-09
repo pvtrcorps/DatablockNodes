@@ -11,7 +11,10 @@ def _draw_value_socket(sock, layout, text, icon='NONE'):
     if sock.is_output:
         # For output sockets, always draw text, then icon, then activate button
         row = layout.row(align=True)
-        row.label(text=text or sock.name)
+        display_text = text or sock.name
+        if sock.node.bl_idname != "FN_read_file":
+            display_text = ""
+        row.label(text=display_text)
         # Always draw the icon if provided, regardless of whether it's a value socket or not.
         # List sockets set their icon in their own draw method, so we need to ensure it's drawn here.
         if icon != 'NONE':
@@ -19,7 +22,13 @@ def _draw_value_socket(sock, layout, text, icon='NONE'):
         
         # Only show activate button if the socket manages a scene datablock
         if sock.node.manages_scene_datablock:
-            op = row.operator("fn.activate_socket", text="", icon='RADIOBUT_ON' if sock.is_active else 'RADIOBUT_OFF', emboss=False)
+            icon_to_use = 'RADIOBUT_OFF'
+            if sock.is_final_active:
+                icon_to_use = 'RECORD_ON'
+            elif sock.is_active:
+                icon_to_use = 'RADIOBUT_ON'
+            
+            op = row.operator("fn.activate_socket", text="", icon=icon_to_use, emboss=False)
             op.node_id = sock.node.fn_node_id
             op.socket_identifier = sock.identifier
 
@@ -47,6 +56,11 @@ class FN_SocketBase(bpy.types.NodeSocket):
     is_active: bpy.props.BoolProperty(
         name="Is Active",
         description="If true, this socket's output is synchronized with the scene.",
+        default=False
+    )
+    is_final_active: bpy.props.BoolProperty(
+        name="Is Final Active",
+        description="If true, this socket is the one explicitly activated by the user.",
         default=False
     )
 

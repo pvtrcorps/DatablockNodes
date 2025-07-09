@@ -28,11 +28,12 @@ class FN_OT_activate_socket(bpy.types.Operator):
         # Deactivate all other active sockets in the tree
         for node in node_tree.nodes:
             for sock in node.outputs:
-                if sock.is_active and sock.node.fn_node_id != self.node_id or (sock.node.fn_node_id == self.node_id and sock.identifier != self.socket_identifier):
-                    sock.is_active = False
+                sock.is_active = False
+                sock.is_final_active = False
 
         # Set the active property on the target socket
         target_socket.is_active = True
+        target_socket.is_final_active = True
 
         # Call the reconciler
         reconciler.sync_active_socket(node_tree, target_socket)

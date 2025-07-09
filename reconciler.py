@@ -13,7 +13,7 @@ def sync_active_socket(tree: bpy.types.NodeTree, active_socket: bpy.types.NodeSo
 
     # 1. Evaluate the node tree "pull-style" starting from the active socket.
     # This phase creates/updates datablocks in memory and returns the desired final state.
-    required_state, active_socket_evaluated_output = _evaluate_node_tree(tree, active_socket)
+    required_state, active_socket_evaluated_output, evaluated_nodes_and_sockets = _evaluate_node_tree(tree, active_socket)
     
     # 2. Get the current managed state from the Blender scene.
     # This finds all datablocks that our addon currently manages.
@@ -23,7 +23,15 @@ def sync_active_socket(tree: bpy.types.NodeTree, active_socket: bpy.types.NodeSo
     # This primarily handles garbage collection (deleting what's no longer required).
     _diff_and_sync(required_state, managed_datablocks_in_scene)
 
-    # 4. Set the active datablock in Blender based on the active socket's output
+    # 4. Reset all is_active flags
+    for node in tree.nodes:
+        for sock in node.outputs:
+            sock.is_active = False
+
+    # 5. Trace the active path and set is_active flags
+    _trace_active_path(active_socket, evaluated_nodes_and_sockets)
+
+    # 6. Set the active datablock in Blender based on the active socket's output
     if active_socket_evaluated_output is not None:
         target_datablock = None
         # If the output is a dictionary (from a node returning {socket_id: value})
@@ -60,17 +68,18 @@ def sync_active_socket(tree: bpy.types.NodeTree, active_socket: bpy.types.NodeSo
 
 # --- Core Logic ---
 
-def _evaluate_node_tree(tree: bpy.types.NodeTree, active_socket: bpy.types.NodeSocket) -> tuple[dict, any]:
+def _evaluate_node_tree(tree: bpy.types.NodeTree, active_socket: bpy.types.NodeSocket) -> tuple[dict, any, dict]:
     """
     Performs a "pull" evaluation backwards from the active socket.
     It uses recursion with memoization (a cache) to avoid re-evaluating nodes.
     This function is the heart of the new engine.
-    Returns a tuple: (all_managed_datablocks, active_socket_evaluated_output)
+    Returns a tuple: (all_managed_datablocks, active_socket_evaluated_output, evaluated_nodes_and_sockets)
     """
     execution_cache = {}
+    evaluated_nodes_and_sockets = {}
     
     # The main recursive call, starting from the node of the active socket
-    _evaluate_node(tree, active_socket.node, execution_cache)
+    _evaluate_node(tree, active_socket.node, execution_cache, evaluated_nodes_and_sockets)
     
     # The execution_cache now contains the results of all evaluated nodes.
     # We need to return a dictionary of all datablocks that are part of the final state.
@@ -91,9 +100,9 @@ def _evaluate_node_tree(tree: bpy.types.NodeTree, active_socket: bpy.types.NodeS
     # Get the specific output of the active socket
     active_socket_evaluated_output = execution_cache.get(active_socket.node.fn_node_id, {}).get(active_socket.identifier)
 
-    return final_state, active_socket_evaluated_output
+    return final_state, active_socket_evaluated_output, evaluated_nodes_and_sockets
 
-def _evaluate_node(tree: bpy.types.NodeTree, node: bpy.types.Node, cache: dict):
+def _evaluate_node(tree: bpy.types.NodeTree, node: bpy.types.Node, cache: dict, evaluated_nodes_and_sockets: dict):
     """
     Recursively evaluates a single node and its dependencies.
     """
@@ -103,24 +112,140 @@ def _evaluate_node(tree: bpy.types.NodeTree, node: bpy.types.Node, cache: dict):
 
     # Prepare kwargs for the node's execute method by evaluating its inputs first.
     kwargs = {'tree': tree}
-    for input_socket in node.inputs:
-        if input_socket.is_linked:
-            # RECURSIVE CALL: Evaluate the node connected to this input.
-            from_node = input_socket.links[0].from_node
-            kwargs[input_socket.identifier] = _evaluate_node(tree, from_node, cache)
-        else:
-            # Use the socket's default value if it's not linked.
-            if hasattr(input_socket, 'default_value'):
-                kwargs[input_socket.identifier] = input_socket.default_value
+
+    # Special handling for Switch node to avoid evaluating all branches
+    if node.bl_idname == "FN_switch":
+        switch_type = node.switch_type
+        if switch_type == 'BOOLEAN':
+            # Evaluate the 'Switch' input first to determine the active branch
+            switch_input_socket = node.inputs.get('Switch')
+            if switch_input_socket and switch_input_socket.is_linked:
+                kwargs[switch_input_socket.identifier] = _evaluate_node(tree, switch_input_socket.links[0].from_node, cache, evaluated_nodes_and_sockets)
+            else:
+                kwargs[switch_input_socket.identifier] = switch_input_socket.default_value
+            
+            switch_value = kwargs.get(switch_input_socket.identifier)
+
+            if switch_value is True:
+                active_input_socket = node.inputs.get('True')
+                inactive_input_socket = node.inputs.get('False')
+            else:
+                active_input_socket = node.inputs.get('False')
+                inactive_input_socket = node.inputs.get('True')
+            
+            # Evaluate only the active branch
+            if active_input_socket and active_input_socket.is_linked:
+                kwargs[active_input_socket.identifier] = _evaluate_node(tree, active_input_socket.links[0].from_node, cache, evaluated_nodes_and_sockets)
+            else:
+                kwargs[active_input_socket.identifier] = active_input_socket.default_value
+            
+            # Set inactive branch to None or default value without evaluating
+            if inactive_input_socket:
+                kwargs[inactive_input_socket.identifier] = None # Or inactive_input_socket.default_value if appropriate
+
+        elif switch_type == 'INDEX':
+            # Evaluate the 'Index' input first
+            index_input_socket = node.inputs.get('Index')
+            if index_input_socket and index_input_socket.is_linked:
+                kwargs[index_input_socket.identifier] = _evaluate_node(tree, index_input_socket.links[0].from_node, cache, evaluated_nodes_and_sockets)
+            else:
+                kwargs[index_input_socket.identifier] = index_input_socket.default_value
+            
+            index_value = kwargs.get(index_input_socket.identifier)
+
+            for i in range(node.item_count):
+                item_input_socket = node.inputs.get(str(i))
+                if item_input_socket:
+                    if i == index_value:
+                        # Evaluate only the active branch
+                        if item_input_socket.is_linked:
+                            kwargs[item_input_socket.identifier] = _evaluate_node(tree, item_input_socket.links[0].from_node, cache, evaluated_nodes_and_sockets)
+                        else:
+                            kwargs[item_input_socket.identifier] = item_input_socket.default_value
+                    else:
+                        # Set inactive branch to None or default value without evaluating
+                        kwargs[item_input_socket.identifier] = None # Or item_input_socket.default_value
+
+    else:
+        # Normal evaluation for other nodes
+        for input_socket in node.inputs:
+            if input_socket.is_linked:
+                # RECURSIVE CALL: Evaluate the node connected to this input.
+                from_node = input_socket.links[0].from_node
+                kwargs[input_socket.identifier] = _evaluate_node(tree, from_node, cache, evaluated_nodes_and_sockets)
+            else:
+                # Use the socket's default value if it's not linked.
+                if hasattr(input_socket, 'default_value'):
+                    kwargs[input_socket.identifier] = input_socket.default_value
 
     # Execute the node's logic with the prepared inputs.
     if hasattr(node, 'execute'):
         print(f"  - Evaluating: {node.name}")
         result_dict = node.execute(**kwargs)
         cache[node.fn_node_id] = result_dict
+
+        # Store the node and its output sockets for active path tracing
+        evaluated_nodes_and_sockets[node.fn_node_id] = {
+            "node": node,
+            "output_sockets": {s.identifier: s for s in node.outputs},
+            "input_sockets_values": {s.identifier: kwargs.get(s.identifier) for s in node.inputs}
+        }
+
         return result_dict
     
     return {} # Return an empty dictionary if no execute method or no result
+
+def _trace_active_path(current_socket: bpy.types.NodeSocket, evaluated_nodes_and_sockets: dict):
+    """
+    Recursively traces the active path backwards from the current_socket
+    and sets the is_active flag for all sockets in the path.
+    """
+    if not current_socket:
+        return
+
+    # Mark the current socket as active
+    current_socket.is_active = True
+
+    # Get the node that owns this socket
+    current_node = current_socket.node
+
+    # Get the evaluated info for this node
+    node_info = evaluated_nodes_and_sockets.get(current_node.fn_node_id)
+    if not node_info:
+        return
+
+    # Find which input socket(s) contributed to the current_socket's output
+    # This logic depends on how each node's execute method works.
+    # For now, we'll assume that if an input socket is linked and its value
+    # was used to produce the output, it's part of the active path.
+    # This is a simplification and might need refinement for complex nodes (e.g., Switch).
+
+    # For a Switch node, only the selected input should be active.
+    if current_node.bl_idname == "FN_switch":
+        switch_type = current_node.switch_type
+        if switch_type == 'BOOLEAN':
+            switch_value = node_info["input_sockets_values"].get(current_node.inputs['Switch'].identifier)
+            if switch_value is True:
+                # Trace back through the 'True' input
+                true_input_socket = current_node.inputs.get('True')
+                if true_input_socket and true_input_socket.is_linked:
+                    _trace_active_path(true_input_socket.links[0].from_socket, evaluated_nodes_and_sockets)
+            else:
+                # Trace back through the 'False' input
+                false_input_socket = current_node.inputs.get('False')
+                if false_input_socket and false_input_socket.is_linked:
+                    _trace_active_path(false_input_socket.links[0].from_socket, evaluated_nodes_and_sockets)
+        elif switch_type == 'INDEX':
+            index = node_info["input_sockets_values"].get(current_node.inputs['Index'].identifier)
+            if index is not None:
+                item_input_socket = current_node.inputs.get(str(index))
+                if item_input_socket and item_input_socket.is_linked:
+                    _trace_active_path(item_input_socket.links[0].from_socket, evaluated_nodes_and_sockets)
+    else:
+        # For other nodes, assume all linked inputs contributed (simplification)
+        for input_socket in current_node.inputs:
+            if input_socket.is_linked:
+                _trace_active_path(input_socket.links[0].from_socket, evaluated_nodes_and_sockets)
 
 
 def _get_managed_datablocks_in_scene() -> dict:
