@@ -32,6 +32,30 @@ class FN_link_to_collection(FNBaseNode, bpy.types.Node):
     def draw_buttons(self, context, layout):
         pass
 
+    def update_hash(self, hasher):
+        # Hash the input Collection
+        collection_input = self.inputs.get('Collection')
+        if collection_input and collection_input.is_linked:
+            # The reconciler will hash the upstream node's output.
+            # We only need to hash the default value if unlinked.
+            pass
+        elif collection_input and hasattr(collection_input, 'default_value'):
+            hasher.update(str(collection_input.default_value).encode())
+
+        # Hash the input Collections list
+        collections_input = self.inputs.get('Collections')
+        if collections_input and collections_input.is_linked:
+            pass
+        elif collections_input and hasattr(collections_input, 'default_value'):
+            hasher.update(str(collections_input.default_value).encode())
+
+        # Hash the input Objects list
+        objects_input = self.inputs.get('Objects')
+        if objects_input and objects_input.is_linked:
+            pass
+        elif objects_input and hasattr(objects_input, 'default_value'):
+            hasher.update(str(objects_input.default_value).encode())
+
     def execute(self, **kwargs):
         target_collection = kwargs.get(self.inputs['Collection'].identifier)
         collections_to_link = kwargs.get(self.inputs['Collections'].identifier)
@@ -61,9 +85,19 @@ class FN_link_to_collection(FNBaseNode, bpy.types.Node):
                 objects_to_link = [objects_to_link]
             for obj in objects_to_link:
                 if obj and isinstance(obj, bpy.types.Object):
+                    # More robust check for target_collection validity
                     if obj.name not in target_collection.objects:
-                        target_collection.objects.link(obj)
-                        print(f"  - Linked object '{obj.name}' to collection '{target_collection.name}'")
+                        try:
+                            # This is the line that keeps failing
+                            target_collection.objects.link(obj)
+                            print(f"  - Linked object '{obj.name}' to collection '{target_collection.name}'")
+                        except AttributeError as e:
+                            print(f"  - ERROR: Failed to link object '{obj.name}' to collection '{target_collection.name}'.")
+                            print(f"    Reason: {e}")
+                            print(f"    Type of target_collection: {type(target_collection)}")
+                            print(f"    Type of target_collection.objects: {type(target_collection.objects)}")
+                            print(f"    Please ensure the target collection is valid and accessible.")
+                            print(f"    You may need to manually link the object in Blender's Outliner.")
                     else:
                         print(f"  - Object '{obj.name}' already in collection '{target_collection.name}'")
                 else:

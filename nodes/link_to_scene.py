@@ -34,18 +34,57 @@ class FN_link_to_scene(FNBaseNode, bpy.types.Node):
         pass
 
     def execute(self, **kwargs):
-        target_scene = kwargs.get(self.inputs['Scene'].identifier)
-        collections_to_link = kwargs.get(self.inputs['Collections'].identifier)
-        objects_to_link = kwargs.get(self.inputs['Objects'].identifier)
+        target_scene_raw = kwargs.get(self.inputs['Scene'].identifier) # Get raw value
+        collections_to_link_raw = kwargs.get(self.inputs['Collections'].identifier)
+        objects_to_link_raw = kwargs.get(self.inputs['Objects'].identifier)
+
+        # Resolve target_scene
+        target_scene = None
+        if isinstance(target_scene_raw, str) and target_scene_raw.startswith('uuid:'):
+            target_scene = uuid_manager.find_datablock_by_uuid(target_scene_raw.split(':')[1])
+        elif isinstance(target_scene_raw, bpy.types.ID):
+            target_scene = target_scene_raw
 
         if not target_scene:
-            print(f"  - Warning: No target scene provided to {self.name}. Skipping.")
+            print(f"  - Warning: No valid target scene provided to {self.name}. Skipping.")
             return None
+
+        # Resolve collections_to_link
+        collections_to_link = []
+        if collections_to_link_raw:
+            if not isinstance(collections_to_link_raw, list):
+                collections_to_link_raw = [collections_to_link_raw]
+            for item_raw in collections_to_link_raw:
+                resolved_item = None
+                if isinstance(item_raw, str) and item_raw.startswith('uuid:'):
+                    resolved_item = uuid_manager.find_datablock_by_uuid(item_raw.split(':')[1])
+                elif isinstance(item_raw, bpy.types.ID):
+                    resolved_item = item_raw
+                
+                if resolved_item:
+                    collections_to_link.append(resolved_item)
+                else:
+                    print(f"  - Warning: Could not resolve item '{item_raw}' for linking collections to scene. Skipping.")
+
+        # Resolve objects_to_link
+        objects_to_link = []
+        if objects_to_link_raw:
+            if not isinstance(objects_to_link_raw, list):
+                objects_to_link_raw = [objects_to_link_raw]
+            for item_raw in objects_to_link_raw:
+                resolved_item = None
+                if isinstance(item_raw, str) and item_raw.startswith('uuid:'):
+                    resolved_item = uuid_manager.find_datablock_by_uuid(item_raw.split(':')[1])
+                elif isinstance(item_raw, bpy.types.ID):
+                    resolved_item = item_raw
+                
+                if resolved_item:
+                    objects_to_link.append(resolved_item)
+                else:
+                    print(f"  - Warning: Could not resolve item '{item_raw}' for linking objects to scene. Skipping.")
 
         # Link collections
         if collections_to_link:
-            if not isinstance(collections_to_link, list):
-                collections_to_link = [collections_to_link]
             for col in collections_to_link:
                 if col and isinstance(col, bpy.types.Collection):
                     if col.name not in target_scene.collection.children:
@@ -58,8 +97,6 @@ class FN_link_to_scene(FNBaseNode, bpy.types.Node):
 
         # Link objects
         if objects_to_link:
-            if not isinstance(objects_to_link, list):
-                objects_to_link = [objects_to_link]
             for obj in objects_to_link:
                 if obj and isinstance(obj, bpy.types.Object):
                     if obj.name not in target_scene.collection.objects:

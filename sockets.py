@@ -21,7 +21,7 @@ def _draw_value_socket(sock, layout, text, icon='NONE'):
             row.label(text="", icon=icon)
         
         # Only show activate button if the socket manages a scene datablock
-        if sock.node.manages_scene_datablock:
+        if hasattr(sock.node, 'manages_scene_datablock') and sock.node.manages_scene_datablock:
             icon_to_use = 'RADIOBUT_OFF'
             if sock.is_final_active:
                 icon_to_use = 'RECORD_ON'

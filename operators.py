@@ -4,39 +4,41 @@ import os
 from . import reconciler
 
 class FN_OT_activate_socket(bpy.types.Operator):
-    """Activates a socket and triggers the scene synchronization."""
+    """Activates a socket, sets it as the final execution point, and triggers sync."""
     bl_idname = "fn.activate_socket"
-    bl_label = "Activate Socket"
+    bl_label = "Activate and Sync Socket"
 
     node_id: bpy.props.StringProperty()
     socket_identifier: bpy.props.StringProperty()
 
     def execute(self, context):
         node_tree = context.space_data.edit_tree
+        
+        # Find the target node and socket
         target_node = next((n for n in node_tree.nodes if n.fn_node_id == self.node_id), None)
-
         if not target_node:
             self.report({'ERROR'}, f"Node with ID {self.node_id} not found.")
             return {'CANCELLED'}
 
         target_socket = next((s for s in target_node.outputs if s.identifier == self.socket_identifier), None)
-
         if not target_socket:
             self.report({'ERROR'}, f"Socket with identifier {self.socket_identifier} not found on node {self.node_id}.")
             return {'CANCELLED'}
 
-        # Deactivate all other active sockets in the tree
+        # First, deactivate all other final active sockets
         for node in node_tree.nodes:
             for sock in node.outputs:
-                sock.is_active = False
-                sock.is_final_active = False
+                if sock.is_final_active:
+                    sock.is_final_active = False
 
-        # Set the active property on the target socket
-        target_socket.is_active = True
+        # Set the target as the new final active socket
         target_socket.is_final_active = True
 
-        # Call the reconciler
+        # Now, call the reconciler to perform the sync. 
+        # This will handle setting the is_active flags correctly for the UI.
         reconciler.sync_active_socket(node_tree, target_socket)
+        
+        self.report({'INFO'}, f"Activated and synced from {target_node.name}.{target_socket.name}")
 
         return {'FINISHED'}
 

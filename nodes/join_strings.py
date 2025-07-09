@@ -10,7 +10,7 @@ class FN_join_strings(FNBaseNode, bpy.types.Node):
         name="Strings",
         default=2,
         min=0,
-        update=lambda self, context: self.update_sockets(context)
+        update=lambda self, context: (self.update_sockets(context), self._trigger_update(context))
     )
 
     def init(self, context):

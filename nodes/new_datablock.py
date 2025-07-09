@@ -64,7 +64,7 @@ class FN_new_datablock(FNBaseNode, bpy.types.Node):
             ('WORLD', 'World', ''),
         ],
         default='SCENE',
-        update=lambda self, context: self.update_sockets(context)
+        update=lambda self, context: (self.update_sockets(context), self._trigger_update(context))
     )
 
     obj_type: bpy.props.EnumProperty(
@@ -76,7 +76,7 @@ class FN_new_datablock(FNBaseNode, bpy.types.Node):
             ('CAMERA', 'Camera', ''),
         ],
         default='EMPTY',
-        update=lambda self, context: self.update_sockets(context)
+        update=lambda self, context: (self.update_sockets(context), self._trigger_update(context))
     )
 
     light_type: bpy.props.EnumProperty(
@@ -88,7 +88,7 @@ class FN_new_datablock(FNBaseNode, bpy.types.Node):
             ('AREA', 'Area', ''),
         ],
         default='POINT',
-        update=lambda self, context: self.update_sockets(context)
+        update=lambda self, context: (self.update_sockets(context), self._trigger_update(context))
     )
 
     def init(self, context):
@@ -135,8 +135,9 @@ class FN_new_datablock(FNBaseNode, bpy.types.Node):
     def execute(self, **kwargs):
         tree = kwargs.get('tree')
         datablock_name = kwargs.get(self.inputs['Name'].identifier, self.datablock_type.capitalize())
+        print(f"[FN_new_datablock] Debug: datablock_name before creation: '{datablock_name}' (Type: {type(datablock_name)})")
 
-        print(f"\n[FN_new_datablock] Node ID: {self.fn_node_id}")
+        print(f"\n[FN_new_datablock] Node ID: {self.fn_node_id})")
         output_socket_identifier = self.outputs[0].identifier
         map_item = next((item for item in tree.fn_state_map if item.node_id == self.fn_node_id and item.socket_identifier == output_socket_identifier), None)
         print(f"[FN_new_datablock] Map Item found: {map_item is not None}")

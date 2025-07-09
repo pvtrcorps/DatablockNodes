@@ -1,5 +1,6 @@
 import bpy
 import uuid
+import hashlib
 
 class FNBaseNode(bpy.types.Node):
     """Base class for all File Nodes, providing the persistent UUID."""
@@ -31,5 +32,16 @@ class FNBaseNode(bpy.types.Node):
         This method should be overridden by subclasses.
         """
         pass
+
+    def _trigger_update(self, context):
+        """A generic update function to be used by properties that should trigger tree execution."""
+        self.id_data.update_tag()
+
+    def update_hash(self, hasher):
+        """Updates the hash with the node's internal properties.
+        Subclasses should override this to include their specific properties.
+        """
+        # Add the node's own ID to the hash to make it unique
+        hasher.update(self.fn_node_id.encode())
 
     

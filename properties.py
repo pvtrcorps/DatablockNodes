@@ -21,8 +21,15 @@ class FNPropertyItem(bpy.types.PropertyGroup):
     )
     socket_type: bpy.props.StringProperty(name="Socket Type")
 
+class FNExecutionCacheEntry(bpy.types.PropertyGroup):
+    node_id: bpy.props.StringProperty()
+    hash: bpy.props.StringProperty()
+    result_json: bpy.props.StringProperty()
+
 def register():
     bpy.utils.register_class(FNPropertyItem)
+    bpy.utils.register_class(FNExecutionCacheEntry)
 
 def unregister():
     bpy.utils.unregister_class(FNPropertyItem)
+    bpy.utils.unregister_class(FNExecutionCacheEntry)

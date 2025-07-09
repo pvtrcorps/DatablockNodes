@@ -9,6 +9,7 @@ from ..sockets import (
     FNSocketCameraList, FNSocketImageList, FNSocketLightList, FNSocketMaterialList,
     FNSocketMeshList, FNSocketNodeTreeList, FNSocketTextList, FNSocketWorkSpaceList, FNSocketStringList
 )
+from .. import uuid_manager
 
 class FN_switch(FNBaseNode, bpy.types.Node):
     bl_idname = "FN_switch"
@@ -21,7 +22,7 @@ class FN_switch(FNBaseNode, bpy.types.Node):
             ('INDEX', 'Index', 'Switch based on an integer index'),
         ],
         default='BOOLEAN',
-        update=lambda self, context: self.update_sockets(context)
+        update=lambda self, context: (self.update_sockets(context), self._trigger_update(context))
     )
 
     data_type: bpy.props.EnumProperty(
@@ -60,14 +61,14 @@ class FN_switch(FNBaseNode, bpy.types.Node):
             ('WORKSPACE_LIST', 'WorkSpace List', ''),
         ],
         default='SCENE',
-        update=lambda self, context: self.update_sockets(context)
+        update=lambda self, context: (self.update_sockets(context), self._trigger_update(context))
     )
 
     item_count: bpy.props.IntProperty(
         name="Items",
         default=2,
         min=0,
-        update=lambda self, context: self.update_sockets(context)
+        update=lambda self, context: (self.update_sockets(context), self._trigger_update(context))
     )
 
     def init(self, context):
@@ -154,29 +155,8 @@ class FN_switch(FNBaseNode, bpy.types.Node):
             layout.prop(self, "item_count", text="Items")
 
     def execute(self, **kwargs):
-        if self.switch_type == 'BOOLEAN':
-            switch_value = kwargs.get(self.inputs['Switch'].identifier)
-            false_value = kwargs.get(self.inputs['False'].identifier)
-            true_value = kwargs.get(self.inputs['True'].identifier)
-            output_value = true_value if switch_value else false_value
-            return {self.outputs['Output'].identifier: output_value}
-
-        elif self.switch_type == 'INDEX':
-            index = kwargs.get(self.inputs['Index'].identifier)
-            if index is None or not isinstance(index, int):
-                print(f"  - Warning: Invalid index provided to {self.name}. Skipping.")
-                return {self.outputs['Output'].identifier: None}
-
-            item_values = []
-            for i in range(self.item_count):
-                item_socket = self.inputs.get(str(i))
-                if item_socket:
-                    item_values.append(kwargs.get(item_socket.identifier))
-                else:
-                    item_values.append(None)
-
-            if 0 <= index < len(item_values):
-                return {self.outputs['Output'].identifier: item_values[index]}
-            else:
-                print(f"  - Warning: Index {index} out of bounds for {self.name} (0 to {len(item_values) - 1}). Returning None.")
-                return {self.outputs['Output'].identifier: None}
+        # With the new reconciler logic, the execute function is greatly simplified.
+        # The reconciler evaluates the active branch and passes the result directly.
+        # This node's job is just to pass that result to its output.
+        output_value = kwargs.get(self.outputs[0].identifier)
+        return {self.outputs[0].identifier: output_value}

@@ -12,12 +12,15 @@ bl_info = {
 }
 
 
+print("--- Loading Datablock Nodes Addon ---")
+
 import bpy
 from nodeitems_utils import NodeCategory, NodeItem, register_node_categories, unregister_node_categories
 
 from . import operators
 from . import sockets
-from . import properties # New import
+from . import properties
+from . import reconciler
 from .nodes import new_datablock, set_datablock_name, link_to_scene, create_list, new_value, link_to_collection, join_strings, split_string, value_to_string, switch, get_item_from_list, import_datablock, read_file, write_file, set_datablock_properties, set_datablock_cycles_properties
 
 # --- State Map Item ---
@@ -35,6 +38,8 @@ class DatablockTree(bpy.types.NodeTree):
 
     # Property to store the state map
     fn_state_map: bpy.props.CollectionProperty(type=FNStateMapItem)
+    # Property to store the execution cache
+    fn_execution_cache: bpy.props.CollectionProperty(type=properties.FNExecutionCacheEntry)
 
 # --- UI ---
 class DATABLOCK_PT_panel(bpy.types.Panel):
@@ -100,7 +105,18 @@ classes = (
     set_datablock_cycles_properties.FN_set_datablock_cycles_properties,
 )
 
+def _clear_all_datablock_tree_caches(dummy):
+    print("[FN_Register] Clearing old caches (deferred)...")
+    for tree in bpy.data.node_groups:
+        if hasattr(tree, 'bl_idname') and tree.bl_idname == 'DatablockTreeType':
+            if 'fn_execution_cache' in tree:
+                del tree['fn_execution_cache']
+                print(f"  - Cleared cache for tree '{tree.name}'")
+    # Remove this handler after it has run once
+    bpy.app.handlers.load_post.remove(_clear_all_datablock_tree_caches)
+
 def register():
+    print("[FN_Register] Registering addon...")
     operators.register()
     sockets.register()
     properties.register() # New registration
@@ -109,7 +125,16 @@ def register():
     
     register_node_categories("DATABLOCK_NODES", node_categories)
 
+    # --- Cache Invalidation (Deferred) --- #
+    # Register a temporary handler to clear caches after file load
+    bpy.app.handlers.load_post.append(_clear_all_datablock_tree_caches)
+    print("[FN_Register] Deferred cache clearing handler appended.")
+
+    # Register the main depsgraph update handler for continuous execution
+    bpy.app.handlers.depsgraph_update_post.append(reconciler.datablock_nodes_depsgraph_handler)
+
 def unregister():
+    print("[FN_Register] Unregistering addon...")
     unregister_node_categories("DATABLOCK_NODES")
 
     for cls in reversed(classes):
@@ -117,6 +142,13 @@ def unregister():
     sockets.unregister()
     properties.unregister() # New unregistration
     operators.unregister()
+
+    # Remove the handler
+    try:
+        bpy.app.handlers.depsgraph_update_post.remove(reconciler.datablock_nodes_depsgraph_handler)
+        print("[FN_Register] App handler removed.")
+    except ValueError:
+        print("[FN_Register] App handler was not found, could not remove.")
 
 if __name__ == "__main__":
     register()
