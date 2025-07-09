@@ -411,6 +411,47 @@ class FNSocketViewLayerList(FN_SocketBase):
     # Blender does not support PointerProperty for ViewLayer, store the name instead.
     value: bpy.props.StringProperty()
 
+# Custom Armature Socket
+class FNSocketArmature(FN_SocketBase):
+    bl_idname = "FNSocketArmature"
+    bl_label = "Armature Socket"
+    is_mutable: bpy.props.BoolProperty(default=True)
+    show_selector: bpy.props.BoolProperty(default=False)
+    def draw(self, context, layout, node, text):
+        _draw_value_socket(self, layout, text, 'ARMATURE_DATA')
+    def draw_color(self, context, node):
+        return _color(0.6, 0.8, 0.2) # Greenish
+    value: bpy.props.PointerProperty(type=bpy.types.Armature)
+
+# Custom Action Socket
+class FNSocketAction(FN_SocketBase):
+    bl_idname = "FNSocketAction"
+    bl_label = "Action Socket"
+    is_mutable: bpy.props.BoolProperty(default=True)
+    show_selector: bpy.props.BoolProperty(default=False)
+    def draw(self, context, layout, node, text):
+        _draw_value_socket(self, layout, text, 'ACTION')
+    def draw_color(self, context, node):
+        return _color(0.9, 0.4, 0.7) # Purplish
+    value: bpy.props.PointerProperty(type=bpy.types.Action)
+
+class FNSocketArmatureList(FN_SocketBase):
+    bl_idname = "FNSocketArmatureList"
+    bl_label = "Armature List"
+    display_shape = 'SQUARE'
+    def draw(self, context, layout, node, text):
+        _draw_value_socket(self, layout, text, 'ARMATURE_DATA')
+    def draw_color(self, context, node):
+        return _color(0.6, 0.8, 0.2)
+
+class FNSocketActionList(FN_SocketBase):
+    bl_idname = "FNSocketActionList"
+    bl_label = "Action List"
+    display_shape = 'SQUARE'
+    def draw(self, context, layout, node, text):
+        _draw_value_socket(self, layout, text, 'ACTION')
+    def draw_color(self, context, node):
+        return _color(0.9, 0.4, 0.7)
 
 
 _all_sockets = (
@@ -432,6 +473,8 @@ _all_sockets = (
     FNSocketNodeTree,
     FNSocketText,
     FNSocketWorkSpace,
+    FNSocketArmature,
+    FNSocketAction,
     FNSocketSceneList,
     FNSocketObjectList,
     FNSocketCollectionList,
@@ -446,6 +489,8 @@ _all_sockets = (
     FNSocketWorkSpaceList,
     FNSocketViewLayerList,
     FNSocketStringList,
+    FNSocketArmatureList,
+    FNSocketActionList,
 )
 
 def register():

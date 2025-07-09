@@ -83,6 +83,8 @@ class FN_link_to_scene(FNBaseNode, bpy.types.Node):
                 else:
                     print(f"  - Warning: Could not resolve item '{item_raw}' for linking objects to scene. Skipping.")
 
+        tree = kwargs.get('tree')
+
         # Link collections
         if collections_to_link:
             for col in collections_to_link:
@@ -90,8 +92,9 @@ class FN_link_to_scene(FNBaseNode, bpy.types.Node):
                     if col.name not in target_scene.collection.children:
                         target_scene.collection.children.link(col)
                         print(f"  - Linked collection '{col.name}' to scene '{target_scene.name}'")
+                        self._register_relationship(tree, col, target_scene, "COLLECTION_SCENE_LINK")
                     else:
-                        print(f"  - Collection '{col.name}' already in scene '{target_scene.name}'")
+                        print(f"  - Collection '{col.name}' already in collection '{target_scene.name}'")
                 else:
                     print(f"  - Warning: An item provided to {self.name} (Collections) is not a valid collection. Skipping.")
 
@@ -102,9 +105,18 @@ class FN_link_to_scene(FNBaseNode, bpy.types.Node):
                     if obj.name not in target_scene.collection.objects:
                         target_scene.collection.objects.link(obj)
                         print(f"  - Linked object '{obj.name}' to scene '{target_scene.name}'")
+                        self._register_relationship(obj, target_scene, "OBJECT_SCENE_LINK")
                     else:
                         print(f"  - Object '{obj.name}' already in scene '{target_scene.name}'")
                 else:
                     print(f"  - Warning: An item provided to {self.name} (Objects) is not a valid object. Skipping.")
         
         return {self.outputs[0].identifier: target_scene}
+
+    def _register_relationship(self, tree, source_datablock, target_datablock, relationship_type):
+        new_rel_item = tree.fn_relationships_map.add()
+        new_rel_item.node_id = self.fn_node_id
+        new_rel_item.source_uuid = uuid_manager.get_uuid(source_datablock)
+        new_rel_item.target_uuid = uuid_manager.get_uuid(target_datablock)
+        new_rel_item.relationship_type = relationship_type
+        print(f"  - Debug: Registered relationship: {relationship_type} from {source_datablock.name} to {target_datablock.name}")

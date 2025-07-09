@@ -27,11 +27,12 @@ class FNBaseNode(bpy.types.Node):
         """Ensure a new UUID is generated when the node is duplicated."""
         self.fn_node_id = str(uuid.uuid4())
 
-    def execute(self, tree: bpy.types.NodeTree, execution_cache: dict):
+    def execute(self, tree: bpy.types.NodeTree, execution_cache: dict) -> tuple[dict, dict]:
         """Executes the node's logic and updates the execution cache.
         This method should be overridden by subclasses.
+        Returns a tuple: (result_dict, visibility_flags_dict)
         """
-        pass
+        return {}, {}
 
     def _trigger_update(self, context):
         """A generic update function to be used by properties that should trigger tree execution."""

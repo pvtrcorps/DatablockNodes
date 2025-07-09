@@ -61,6 +61,8 @@ class FN_link_to_collection(FNBaseNode, bpy.types.Node):
         collections_to_link = kwargs.get(self.inputs['Collections'].identifier)
         objects_to_link = kwargs.get(self.inputs['Objects'].identifier)
 
+        tree = kwargs.get('tree')
+
         if not target_collection:
             print(f"  - Warning: No target collection provided to {self.name}. Skipping.")
             return None
@@ -74,6 +76,7 @@ class FN_link_to_collection(FNBaseNode, bpy.types.Node):
                     if col.name not in target_collection.children:
                         target_collection.children.link(col)
                         print(f"  - Linked collection '{col.name}' to collection '{target_collection.name}'")
+                        self._register_relationship(tree, col, target_collection, "COLLECTION_CHILD_LINK")
                     else:
                         print(f"  - Collection '{col.name}' already in collection '{target_collection.name}'")
                 else:
@@ -88,9 +91,9 @@ class FN_link_to_collection(FNBaseNode, bpy.types.Node):
                     # More robust check for target_collection validity
                     if obj.name not in target_collection.objects:
                         try:
-                            # This is the line that keeps failing
                             target_collection.objects.link(obj)
                             print(f"  - Linked object '{obj.name}' to collection '{target_collection.name}'")
+                            self._register_relationship(tree, obj, target_collection, "COLLECTION_OBJECT_LINK")
                         except AttributeError as e:
                             print(f"  - ERROR: Failed to link object '{obj.name}' to collection '{target_collection.name}'.")
                             print(f"    Reason: {e}")
@@ -104,3 +107,11 @@ class FN_link_to_collection(FNBaseNode, bpy.types.Node):
                     print(f"  - Warning: An item provided to {self.name} (Objects) is not a valid object. Skipping.")
         
         return {self.outputs[0].identifier: target_collection}
+
+    def _register_relationship(self, tree, source_datablock, target_datablock, relationship_type):
+        new_rel_item = tree.fn_relationships_map.add()
+        new_rel_item.node_id = self.fn_node_id
+        new_rel_item.source_uuid = uuid_manager.get_uuid(source_datablock)
+        new_rel_item.target_uuid = uuid_manager.get_uuid(target_datablock)
+        new_rel_item.relationship_type = relationship_type
+        print(f"  - Debug: Registered relationship: {relationship_type} from {source_datablock.name} to {target_datablock.name}")

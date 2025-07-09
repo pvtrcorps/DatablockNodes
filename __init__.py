@@ -21,13 +21,21 @@ from . import operators
 from . import sockets
 from . import properties
 from . import reconciler
-from .nodes import new_datablock, set_datablock_name, link_to_scene, create_list, new_value, link_to_collection, join_strings, split_string, value_to_string, switch, get_item_from_list, import_datablock, read_file, write_file, set_datablock_properties, set_datablock_cycles_properties
+from .nodes import new_datablock, set_datablock_name, link_to_scene, create_list, new_value, link_to_collection, join_strings, split_string, value_to_string, switch, get_item_from_list, import_datablock, read_file, write_file, set_datablock_properties, set_datablock_cycles_properties, set_object_data, set_scene_world, set_object_material, set_object_parent
 
 # --- State Map Item ---
 class FNStateMapItem(bpy.types.PropertyGroup):
     node_id: bpy.props.StringProperty()
     socket_identifier: bpy.props.StringProperty() # New: Identifier of the socket this item belongs to
     datablock_uuids: bpy.props.StringProperty()
+
+# --- Relationship Map Item ---
+class FNRelationshipItem(bpy.types.PropertyGroup):
+    node_id: bpy.props.StringProperty()
+    source_uuid: bpy.props.StringProperty()
+    target_uuid: bpy.props.StringProperty()
+    relationship_type: bpy.props.StringProperty() # e.g., "COLLECTION_OBJECT_LINK", "COLLECTION_CHILD_LINK"
+
 
 # --- Node Tree ---
 class DatablockTree(bpy.types.NodeTree):
@@ -38,6 +46,8 @@ class DatablockTree(bpy.types.NodeTree):
 
     # Property to store the state map
     fn_state_map: bpy.props.CollectionProperty(type=FNStateMapItem)
+    # Property to store the relationships map
+    fn_relationships_map: bpy.props.CollectionProperty(type=FNRelationshipItem)
     # Property to store the execution cache
     fn_execution_cache: bpy.props.CollectionProperty(type=properties.FNExecutionCacheEntry)
 
@@ -77,6 +87,10 @@ node_categories = [
         NodeItem("FN_write_file"),
         NodeItem("FN_set_datablock_properties"),
         NodeItem("FN_set_datablock_cycles_properties"),
+        NodeItem("FN_set_object_data"),
+        NodeItem("FN_set_scene_world"),
+        NodeItem("FN_set_object_material"),
+        NodeItem("FN_set_object_parent"),
     ]),
 ]
 
@@ -84,6 +98,7 @@ node_categories = [
 
 classes = (
     FNStateMapItem,
+    FNRelationshipItem,
     DatablockTree,
     
     DATABLOCK_PT_panel,
@@ -103,6 +118,10 @@ classes = (
     write_file.FN_write_file,
     set_datablock_properties.FN_set_datablock_properties,
     set_datablock_cycles_properties.FN_set_datablock_cycles_properties,
+    set_object_data.FN_set_object_data,
+    set_scene_world.FN_set_scene_world,
+    set_object_material.FN_set_object_material,
+    set_object_parent.FN_set_object_parent,
 )
 
 def _clear_all_datablock_tree_caches(dummy):

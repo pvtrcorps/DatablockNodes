@@ -34,7 +34,7 @@ def find_datablock_by_uuid(uuid_to_find, retries=5, delay=0.01):
         return None
 
     for attempt in range(retries):
-        for collection_name, collection in (('objects', bpy.data.objects), ('scenes', bpy.data.scenes), ('materials', bpy.data.materials), ('meshes', bpy.data.meshes), ('collections', bpy.data.collections), ('cameras', bpy.data.cameras), ('lights', bpy.data.lights), ('images', bpy.data.images), ('node_groups', bpy.data.node_groups), ('texts', bpy.data.texts), ('worlds', bpy.data.worlds)): # Add other relevant collections
+        for collection_name, collection in (('objects', bpy.data.objects), ('scenes', bpy.data.scenes), ('materials', bpy.data.materials), ('meshes', bpy.data.meshes), ('collections', bpy.data.collections), ('cameras', bpy.data.cameras), ('lights', bpy.data.lights), ('images', bpy.data.images), ('node_groups', bpy.data.node_groups), ('texts', bpy.data.texts), ('worlds', bpy.data.worlds), ('armatures', bpy.data.armatures), ('actions', bpy.data.actions)):
             # print(f"[UUID_MANAGER]   Checking collection: {collection_name}") # Too verbose
             for datablock in collection:
                 current_uuid = datablock.get(FN_UUID_PROPERTY, None)

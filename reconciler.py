@@ -93,7 +93,7 @@ def sync_active_socket(tree: bpy.types.NodeTree, active_socket: bpy.types.NodeSo
 
     # 1. Evaluate the node tree "pull-style" starting from the active socket.
     # This phase creates/updates datablocks in memory and returns the desired final state.
-    required_state, active_socket_evaluated_output, evaluated_nodes_and_sockets = _evaluate_node_tree(tree, active_socket)
+    required_state, active_socket_evaluated_output, evaluated_nodes_and_sockets, required_relationships = _evaluate_node_tree(tree, active_socket)
     
     # 2. Get the current managed state from the Blender scene.
     # This finds all datablocks that our addon currently manages.
@@ -104,7 +104,7 @@ def sync_active_socket(tree: bpy.types.NodeTree, active_socket: bpy.types.NodeSo
 
     # 3. Perform the diff and sync.
     # This primarily handles garbage collection (deleting what's no longer required).
-    _diff_and_sync(required_state, managed_datablocks_in_scene)
+    _diff_and_sync(tree, required_state, managed_datablocks_in_scene, required_relationships)
 
     # 4. Reset all is_active flags
     for node in tree.nodes:
@@ -135,15 +135,9 @@ def sync_active_socket(tree: bpy.types.NodeTree, active_socket: bpy.types.NodeSo
                 target_datablock = next(iter(target_datablock.values()), None)
 
             if isinstance(target_datablock, bpy.types.Scene):
-                bpy.context.view_layer.update() # Force dependency graph update
                 bpy.context.window.scene = target_datablock
                 print(f"  - Set active scene to: {target_datablock.name}")
-            elif isinstance(target_datablock, bpy.types.Object):
-                # Set active object and select it
-                bpy.context.view_layer.objects.active = target_datablock
-                target_datablock.select_set(True)
-                print(f"  - Set active object to: {target_datablock.name}")
-            # Add more types as needed (e.g., Collection, World, etc.)
+            # No specific activation logic for Object or Collection, as _diff_and_sync handles linking
             else:
                 print(f"  - No specific activation logic for type: {type(target_datablock).__name__}")
 
@@ -151,12 +145,12 @@ def sync_active_socket(tree: bpy.types.NodeTree, active_socket: bpy.types.NodeSo
 
 # --- Core Logic ---
 
-def _evaluate_node_tree(tree: bpy.types.NodeTree, active_socket: bpy.types.NodeSocket) -> tuple[dict, any, dict]:
+def _evaluate_node_tree(tree: bpy.types.NodeTree, active_socket: bpy.types.NodeSocket) -> tuple[dict, any, dict, set]:
     """
     Performs a "pull" evaluation backwards from the active socket.
     It uses recursion with memoization (a cache) to avoid re-evaluating nodes.
     This function is the heart of the new engine.
-    Returns a tuple: (all_managed_datablocks, active_socket_evaluated_output, evaluated_nodes_and_sockets)
+    Returns a tuple: (all_managed_datablocks, active_socket_evaluated_output, evaluated_nodes_and_sockets, required_relationships)
     """
     # This is a session cache, it's cleared for every full execution run.
     # It stores (result_dict, hash) tuples.
@@ -210,7 +204,13 @@ def _evaluate_node_tree(tree: bpy.types.NodeTree, active_socket: bpy.types.NodeS
                         resolved_list.append(item)
                 active_socket_evaluated_output = resolved_list
 
-    return final_state, active_socket_evaluated_output, evaluated_nodes_and_sockets
+    # Collect required relationships
+    required_relationships = set()
+    for rel_item in tree.fn_relationships_map:
+        if rel_item.node_id in evaluated_nodes_and_sockets:
+            required_relationships.add((rel_item.source_uuid, rel_item.target_uuid, rel_item.relationship_type))
+
+    return final_state, active_socket_evaluated_output, evaluated_nodes_and_sockets, required_relationships
 
 def _evaluate_node(tree: bpy.types.NodeTree, node: bpy.types.Node, cache: dict, evaluated_nodes_and_sockets: dict):
     """
@@ -446,7 +446,8 @@ def _get_managed_datablocks_in_scene() -> dict:
         bpy.data.objects, bpy.data.scenes, bpy.data.collections,
         bpy.data.meshes, bpy.data.materials, bpy.data.images,
         bpy.data.lights, bpy.data.cameras, bpy.data.worlds,
-        bpy.data.node_groups, bpy.data.texts, bpy.data.actions
+        bpy.data.node_groups, bpy.data.texts, bpy.data.actions,
+        bpy.data.armatures, bpy.data.actions
     ]
 
     for collection in datablock_collections:
@@ -459,25 +460,130 @@ def _get_managed_datablocks_in_scene() -> dict:
     return managed_datablocks
 
 
-def _diff_and_sync(required_state: dict, current_state: dict):
+def _diff_and_sync(tree: bpy.types.NodeTree, required_state: dict, current_state: dict, required_relationships: set):
     """
-    Compares the required state with the current state and applies changes.
-    In our new model, creation and updates happen during evaluation.
-    This function's main role is GARBAGE COLLECTION.
+    Manages the state of datablocks, including persistence, visibility, and garbage collection.
+    - Sets `use_fake_user` to preserve datablocks that are not currently required but should not be deleted.
+    - Links/unlinks objects and collections from the scene to control visibility.
+    - Renames datablocks with a `.` prefix to hide them from UI lists when not required.
+    - Deletes orphaned datablocks whose creator node has been removed.
     """
     required_uuids = set(required_state.keys())
-    current_uuids = set(current_state.keys())
+    existing_node_ids = {node.fn_node_id for node in tree.nodes}
+    active_scene = bpy.context.scene
+    all_managed_uuids = set(current_state.keys()).union(required_uuids)
 
-    # --- Garbage Collection ---
-    uuids_to_delete = current_uuids - required_uuids
-    
-    if not uuids_to_delete:
-        print("  - Garbage Collection: No stale datablocks to remove.")
-        return
+    # --- State Reconciliation (Preserve/Show/Hide/Rename) ---
+    for uuid in all_managed_uuids:
+        datablock = current_state.get(uuid) or required_state.get(uuid)
+        if not datablock:
+            continue
 
-    print(f"  - Garbage Collection: Found {len(uuids_to_delete)} stale datablocks to remove.")
+        is_required = uuid in required_uuids
+        creator_node_id = next((item.node_id for item in tree.fn_state_map if uuid in item.datablock_uuids.split(',')), None)
+        creator_exists = creator_node_id in existing_node_ids
 
-    # Map datablock types to their corresponding bpy.data collection for removal
+        if is_required:
+            # STATE: Visible and Active
+            datablock.use_fake_user = False
+            
+            # 1. Ensure correct name (no dot prefix)
+            if datablock.name.startswith('.'):
+                datablock.name = datablock.name[1:]
+            
+            
+        
+        elif not is_required and creator_exists:
+            # STATE: Preserved and Hidden
+            datablock.use_fake_user = True
+
+            # 1. Unlink from scene if applicable
+            if isinstance(datablock, bpy.types.Object):
+                if datablock.name in active_scene.collection.objects:
+                    active_scene.collection.objects.unlink(datablock)
+            elif isinstance(datablock, bpy.types.Collection):
+                if datablock.name in active_scene.collection.children:
+                    active_scene.collection.children.unlink(datablock)
+
+            # 2. Ensure dot prefix in name
+            if not datablock.name.startswith('.'):
+                datablock.name = f".{datablock.name}"
+
+        elif not creator_exists:
+            # STATE: Orphaned (will be deleted in the next pass)
+            datablock.use_fake_user = False
+
+    # --- Relationship Reconciliation (Unlink what's no longer required) ---
+    print(f"  - Debug: tree.fn_relationships_map: {[(item.source_uuid, item.target_uuid, item.relationship_type) for item in tree.fn_relationships_map]}")
+    print(f"  - Debug: required_relationships: {required_relationships}")
+    relationships_to_remove_indices = []
+    for i, rel_item in enumerate(tree.fn_relationships_map):
+        current_relationship_tuple = (rel_item.source_uuid, rel_item.target_uuid, rel_item.relationship_type)
+        
+        print(f"  - Debug: Checking relationship for unlinking: {current_relationship_tuple}. Is not in required_relationships: {current_relationship_tuple not in required_relationships}")
+        if current_relationship_tuple not in required_relationships:
+            # This relationship is no longer required, attempt to unlink
+            source_datablock = uuid_manager.find_datablock_by_uuid(rel_item.source_uuid)
+            target_datablock = uuid_manager.find_datablock_by_uuid(rel_item.target_uuid)
+
+            if source_datablock and target_datablock:
+                print(f"  - Debug: Attempting unlink. Source Datablock: {source_datablock.name} ({type(source_datablock).__name__}), Target Datablock: {target_datablock.name} ({type(target_datablock).__name__})")
+                try:
+                    if rel_item.relationship_type == "COLLECTION_OBJECT_LINK" and isinstance(target_datablock, bpy.types.Collection) and isinstance(source_datablock, bpy.types.Object):
+                        print(f"  - Debug: COLLECTION_OBJECT_LINK check: target_datablock in source_datablock.users_collection = {target_datablock in source_datablock.users_collection}")
+                        if target_datablock in source_datablock.users_collection:
+                            target_datablock.objects.unlink(source_datablock)
+                            print(f"  - Unlinked object '{source_datablock.name}' from collection '{target_datablock.name}'")
+                    elif rel_item.relationship_type == "COLLECTION_CHILD_LINK" and isinstance(target_datablock, bpy.types.Collection) and isinstance(source_datablock, bpy.types.Collection):
+                        print(f"  - Debug: COLLECTION_CHILD_LINK check: source_datablock in target_datablock.children = {source_datablock in target_datablock.children}")
+                        if source_datablock in target_datablock.children:
+                            target_datablock.children.unlink(source_datablock)
+                            print(f"  - Unlinked collection '{source_datablock.name}' from collection '{target_datablock.name}'")
+                    elif rel_item.relationship_type.startswith("OBJECT_DATA_ASSIGN") and isinstance(source_datablock, bpy.types.Object):
+                        # Check if the assigned data is still the one we're trying to unlink
+                        if source_datablock.data == target_datablock:
+                            source_datablock.data = None
+                            print(f"  - Cleared data of object '{source_datablock.name}'")
+                    elif rel_item.relationship_type == "SCENE_WORLD_ASSIGN" and isinstance(source_datablock, bpy.types.Scene):
+                        if source_datablock.world == target_datablock:
+                            source_datablock.world = None
+                            print(f"  - Cleared world of scene '{source_datablock.name}'")
+                    elif rel_item.relationship_type == "OBJECT_MATERIAL_ASSIGN" and isinstance(source_datablock, bpy.types.Object) and isinstance(target_datablock, bpy.types.Material):
+                        if source_datablock.data and target_datablock in source_datablock.data.materials:
+                            # Find the index of the material to remove it
+                            try:
+                                material_index = source_datablock.data.materials.find(target_datablock.name)
+                                if material_index != -1:
+                                    source_datablock.data.materials.pop(index=material_index)
+                                    print(f"  - Unassigned material '{target_datablock.name}' from object '{source_datablock.name}'")
+                            except Exception as e:
+                                print(f"  - Warning: Failed to remove material '{target_datablock.name}' from object '{source_datablock.name}': {e}")
+                    elif rel_item.relationship_type == "OBJECT_PARENTING" and isinstance(source_datablock, bpy.types.Object) and isinstance(target_datablock, bpy.types.Object):
+                        if source_datablock.parent == target_datablock:
+                            source_datablock.parent = None
+                            print(f"  - Unparented object '{source_datablock.name}' from '{target_datablock.name}'")
+                    elif rel_item.relationship_type == "COLLECTION_SCENE_LINK" and isinstance(source_datablock, bpy.types.Collection) and isinstance(target_datablock, bpy.types.Scene):
+                        if source_datablock.name in target_datablock.collection.children:
+                            target_datablock.collection.children.unlink(source_datablock)
+                            print(f"  - Unlinked collection '{source_datablock.name}' from scene '{target_datablock.name}'")
+                    elif rel_item.relationship_type == "OBJECT_SCENE_LINK" and isinstance(source_datablock, bpy.types.Object) and isinstance(target_datablock, bpy.types.Scene):
+                        if source_datablock.name in target_datablock.collection.objects:
+                            target_datablock.collection.objects.unlink(source_datablock)
+                            print(f"  - Unlinked object '{source_datablock.name}' from scene '{target_datablock.name}'")
+                except Exception as e:
+                    print(f"  - Warning: Failed to unlink relationship {current_relationship_tuple}: {e}")
+            
+            relationships_to_remove_indices.append(i)
+        elif rel_item.node_id not in existing_node_ids:
+            # Relationship's creator node no longer exists, mark for removal
+            relationships_to_remove_indices.append(i)
+
+    # Remove relationships that are no longer required or whose creator nodes are gone
+    for i in sorted(relationships_to_remove_indices, reverse=True):
+        tree.fn_relationships_map.remove(i)
+
+
+    # --- Garbage Collection of Orphaned Datablocks (final pass) ---
     removal_map = {
         bpy.types.Object: bpy.data.objects,
         bpy.types.Scene: bpy.data.scenes,
@@ -492,19 +598,26 @@ def _diff_and_sync(required_state: dict, current_state: dict):
         bpy.types.World: bpy.data.worlds,
     }
 
-    for uuid in uuids_to_delete:
-        datablock = current_state[uuid]
-        remover_collection = removal_map.get(type(datablock))
-        
-        if remover_collection:
-            try:
-                print(f"    - Deleting stale datablock '{datablock.name}' (UUID: {uuid})")
-                remover_collection.remove(datablock)
-            except (ReferenceError, RuntimeError):
-                # This can happen if the datablock was already removed as a dependency
-                print(f"    - Warning: Datablock with UUID {uuid} was already removed.")
-        else:
-            print(f"    - Warning: No removal handler for type '{type(datablock).__name__}'")
+    orphaned_uuids_to_delete = []
+    for uuid in all_managed_uuids:
+        creator_node_id = next((item.node_id for item in tree.fn_state_map if uuid in item.datablock_uuids.split(',')), None)
+        if creator_node_id not in existing_node_ids:
+            datablock = current_state.get(uuid)
+            if not datablock:
+                continue
+            
+            remover_collection = removal_map.get(type(datablock))
+            if remover_collection:
+                try:
+                    remover_collection.remove(datablock)
+                except (ReferenceError, RuntimeError):
+                    pass # Already removed
+
+    # --- Garbage Collection of fn_state_map ---
+    items_to_remove_indices = [i for i, item in enumerate(tree.fn_state_map) if item.node_id not in existing_node_ids]
+    if items_to_remove_indices:
+        for i in sorted(items_to_remove_indices, reverse=True):
+            tree.fn_state_map.remove(i)
 
 def _set_rna_property_value(rna_object: bpy.types.bpy_struct, rna_path: str, value):
     """

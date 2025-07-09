@@ -20,17 +20,13 @@ _datablock_socket_map = {
     'TEXT': 'FNSocketText',
     'WORKSPACE': 'FNSocketWorkSpace',
     'WORLD': 'FNSocketWorld',
+    'ARMATURE': 'FNSocketArmature',
+    'ACTION': 'FNSocketAction',
 }
 
 _datablock_creation_map = {
     'SCENE': lambda name: bpy.data.scenes.new(name=name),
-    'OBJECT': lambda name, obj_type, object_data: (
-        bpy.data.objects.new(name=name, object_data=None) if obj_type == 'EMPTY' else
-        bpy.data.objects.new(name=name, object_data=object_data if isinstance(object_data, bpy.types.Mesh) else bpy.data.meshes.new(name=name + "_mesh")) if obj_type == 'MESH' else
-        bpy.data.objects.new(name=name, object_data=object_data if isinstance(object_data, bpy.types.Light) else bpy.data.lights.new(name=name + "_light", type='POINT')) if obj_type == 'LIGHT' else
-        bpy.data.objects.new(name=name, object_data=object_data if isinstance(object_data, bpy.types.Camera) else bpy.data.cameras.new(name=name + "_camera")) if obj_type == 'CAMERA' else
-        None
-    ),
+    'OBJECT': lambda name: bpy.data.objects.new(name=name, object_data=None), # Simplified: always create generic object
     'COLLECTION': lambda name: bpy.data.collections.new(name=name),
     'CAMERA': lambda name: bpy.data.cameras.new(name=name),
     'IMAGE': lambda name, width, height: bpy.data.images.new(name=name, width=width, height=height),
@@ -41,6 +37,8 @@ _datablock_creation_map = {
     'TEXT': lambda name: bpy.data.texts.new(name=name),
     'WORKSPACE': lambda name: bpy.data.workspaces.new(name=name),
     'WORLD': lambda name: bpy.data.worlds.new(name=name),
+    'ARMATURE': lambda name: bpy.data.armatures.new(name=name),
+    'ACTION': lambda name: bpy.data.actions.new(name=name),
 }
 
 class FN_new_datablock(FNBaseNode, bpy.types.Node):
@@ -62,22 +60,14 @@ class FN_new_datablock(FNBaseNode, bpy.types.Node):
             ('TEXT', 'Text', ''),
             ('WORKSPACE', 'WorkSpace', ''),
             ('WORLD', 'World', ''),
+            ('ARMATURE', 'Armature', ''),
+            ('ACTION', 'Action', ''),
         ],
         default='SCENE',
         update=lambda self, context: (self.update_sockets(context), self._trigger_update(context))
     )
 
-    obj_type: bpy.props.EnumProperty(
-        name="Object Type",
-        items=[
-            ('EMPTY', 'Empty', ''),
-            ('MESH', 'Mesh', ''),
-            ('LIGHT', 'Light', ''),
-            ('CAMERA', 'Camera', ''),
-        ],
-        default='EMPTY',
-        update=lambda self, context: (self.update_sockets(context), self._trigger_update(context))
-    )
+    # Removed obj_type as it's no longer directly used for data creation here
 
     light_type: bpy.props.EnumProperty(
         name="Light Type",
@@ -105,16 +95,8 @@ class FN_new_datablock(FNBaseNode, bpy.types.Node):
             self.outputs.remove(self.outputs[-1])
 
         # Add specific input sockets based on datablock_type
-        if self.datablock_type == 'OBJECT':
-            _object_data_socket = {
-                'EMPTY': None,
-                'MESH': 'FNSocketMesh',
-                'LIGHT': 'FNSocketLight',
-                'CAMERA': 'FNSocketCamera',
-            }
-            if _object_data_socket[self.obj_type]:
-                self.inputs.new(_object_data_socket[self.obj_type], "Data")
-        elif self.datablock_type == 'IMAGE':
+        # Removed 'OBJECT' specific input for 'Data'
+        if self.datablock_type == 'IMAGE':
             self.inputs.new('FNSocketInt', "Width")
             self.inputs.new('FNSocketInt', "Height")
         elif self.datablock_type == 'LIGHT':
@@ -127,9 +109,8 @@ class FN_new_datablock(FNBaseNode, bpy.types.Node):
 
     def draw_buttons(self, context, layout):
         layout.prop(self, "datablock_type", text="Type")
-        if self.datablock_type == 'OBJECT':
-            layout.prop(self, "obj_type", text="Object Type")
-        elif self.datablock_type == 'LIGHT':
+        # Removed obj_type from draw_buttons
+        if self.datablock_type == 'LIGHT':
             layout.prop(self, "light_type", text="Light Type")
 
     def execute(self, **kwargs):
@@ -160,8 +141,7 @@ class FN_new_datablock(FNBaseNode, bpy.types.Node):
             if creation_func:
                 new_datablock = None
                 if self.datablock_type == 'OBJECT':
-                    object_data = kwargs.get(self.inputs.get('Data', {}).get('identifier'))
-                    new_datablock = creation_func(datablock_name, self.obj_type, object_data)
+                    new_datablock = creation_func(datablock_name) # Simplified call
                 elif self.datablock_type == 'IMAGE':
                     image_width = kwargs.get(self.inputs['Width'].identifier, 1024)
                     image_height = kwargs.get(self.inputs['Height'].identifier, 1024)
