@@ -47,6 +47,10 @@ class FN_value_to_string(FNBaseNode, bpy.types.Node):
         # Add output string socket
         self.outputs.new('FNSocketString', "String")
 
+    def update_hash(self, hasher):
+        super().update_hash(hasher)
+        hasher.update(self.value_type.encode())
+
     def draw_buttons(self, context, layout):
         layout.prop(self, "value_type", text="Type")
 

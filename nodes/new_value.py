@@ -72,6 +72,7 @@ class FN_new_value(FNBaseNode, bpy.types.Node):
             layout.prop(self, "color_value")
 
     def update_hash(self, hasher):
+        super().update_hash(hasher)
         # Add the node's internal properties to the hash
         hasher.update(self.value_type.encode())
         if self.value_type == 'BOOLEAN':

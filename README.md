@@ -86,6 +86,7 @@ Es una nueva colección persistente (`bpy.props.CollectionProperty` de tipo `FNR
 *   **Comentarios:** Añadir comentarios solo cuando sea necesario para explicar el *porqué* de una decisión compleja, no el *qué* hace el código.
 *   **Pruebas:** Siempre que sea posible, crear pruebas unitarias o de integración para verificar el comportamiento de los nodos y el sistema.
 *   **Consistencia de Relaciones:** Al definir nuevos tipos de relaciones, asegúrese de que sean claras y consistentes con los tipos existentes (ej. `COLLECTION_OBJECT_LINK`, `COLLECTION_CHILD_LINK`).
+*   **Forma de los Sockets:** Utilice `socket.display_shape = 'SQUARE'` para los sockets que representan listas de datablocks (ej. `FNSocketObjectList`, `FNSocketCollectionList`). Esto proporciona una indicación visual clara de que el socket maneja múltiples elementos.
 
 ## 6. Cómo Implementar un Nuevo Nodo
 

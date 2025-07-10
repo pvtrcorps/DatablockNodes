@@ -36,7 +36,31 @@ def datablock_nodes_depsgraph_handler(scene, depsgraph):
                 break
     
     if not active_tree:
+        print("[FN_Handler] No active DatablockTreeType found. Skipping handler.")
         return
+
+    # Calculate current active state hash
+    current_active_socket = None
+    for node in active_tree.nodes:
+        for sock in node.outputs:
+            if sock.is_final_active:
+                current_active_socket = sock
+                break
+        if current_active_socket:
+            break
+
+    if not current_active_socket:
+        print("[FN_Handler] No final active socket found in active tree. Skipping handler.")
+        return
+
+    current_active_state_hash = _get_node_and_input_hash(active_tree, current_active_socket.node)
+
+    if current_active_state_hash == active_tree.fn_last_evaluated_hash:
+        print(f"[FN_Handler] Active state hash unchanged ({current_active_state_hash[:7]}...). Skipping execution.")
+        return
+        return
+
+    print(f"[FN_Handler] depsgraph_update_post triggered for '{active_tree.name}'.")
 
     # --- Debounce mechanism --- #
     def execution_wrapper():
@@ -143,6 +167,9 @@ def sync_active_socket(tree: bpy.types.NodeTree, active_socket: bpy.types.NodeSo
 
     print(f"--- [Reconciler] Sync finished ---")
 
+    # Update the last evaluated hash for performance optimization
+    tree.fn_last_evaluated_hash = _get_node_and_input_hash(tree, active_socket.node)
+
 # --- Core Logic ---
 
 def _evaluate_node_tree(tree: bpy.types.NodeTree, active_socket: bpy.types.NodeSocket) -> tuple[dict, any, dict, set]:
@@ -211,6 +238,29 @@ def _evaluate_node_tree(tree: bpy.types.NodeTree, active_socket: bpy.types.NodeS
             required_relationships.add((rel_item.source_uuid, rel_item.target_uuid, rel_item.relationship_type))
 
     return final_state, active_socket_evaluated_output, evaluated_nodes_and_sockets, required_relationships
+
+def _get_node_and_input_hash(tree: bpy.types.NodeTree, node: bpy.types.Node) -> str:
+    """
+    Calculates a hash for a given node based on its own properties and the values of its direct inputs.
+    This is used to determine if a node's state has changed, triggering re-evaluation.
+    """
+    hasher = hashlib.sha256()
+    node.update_hash(hasher) # Include the node's own properties in the hash
+
+    # Include hashes of direct input values
+    for input_socket in node.inputs:
+        if input_socket.is_linked:
+            from_node = input_socket.links[0].from_node
+            # Recursively get the hash of the upstream node's state
+            upstream_node_hash = _get_node_and_input_hash(tree, from_node)
+            hasher.update(upstream_node_hash.encode())
+        else:
+            # For unlinked inputs, hash their default value
+            val = getattr(input_socket, 'default_value', None)
+            if val is not None:
+                hasher.update(str(tuple(val) if isinstance(val, (list, bpy.types.bpy_prop_array)) else val).encode())
+
+    return hasher.hexdigest()
 
 def _evaluate_node(tree: bpy.types.NodeTree, node: bpy.types.Node, cache: dict, evaluated_nodes_and_sockets: dict):
     """
@@ -348,6 +398,14 @@ def _evaluate_node(tree: bpy.types.NodeTree, node: bpy.types.Node, cache: dict, 
         for key, value in kwargs.items():
             if isinstance(value, str) and value.startswith('uuid:'):
                 resolved_kwargs[key] = uuid_manager.find_datablock_by_uuid(value.split(':')[1])
+            elif isinstance(value, list):
+                resolved_list = []
+                for item in value:
+                    if isinstance(item, str) and item.startswith('uuid:'):
+                        resolved_list.append(uuid_manager.find_datablock_by_uuid(item.split(':')[1]))
+                    else:
+                        resolved_list.append(item)
+                resolved_kwargs[key] = resolved_list
             else:
                 resolved_kwargs[key] = value
         
@@ -514,23 +572,18 @@ def _diff_and_sync(tree: bpy.types.NodeTree, required_state: dict, current_state
             datablock.use_fake_user = False
 
     # --- Relationship Reconciliation (Unlink what's no longer required) ---
-    print(f"  - Debug: tree.fn_relationships_map: {[(item.source_uuid, item.target_uuid, item.relationship_type) for item in tree.fn_relationships_map]}")
-    print(f"  - Debug: required_relationships: {required_relationships}")
     relationships_to_remove_indices = []
     for i, rel_item in enumerate(tree.fn_relationships_map):
         current_relationship_tuple = (rel_item.source_uuid, rel_item.target_uuid, rel_item.relationship_type)
         
-        print(f"  - Debug: Checking relationship for unlinking: {current_relationship_tuple}. Is not in required_relationships: {current_relationship_tuple not in required_relationships}")
         if current_relationship_tuple not in required_relationships:
             # This relationship is no longer required, attempt to unlink
             source_datablock = uuid_manager.find_datablock_by_uuid(rel_item.source_uuid)
             target_datablock = uuid_manager.find_datablock_by_uuid(rel_item.target_uuid)
 
             if source_datablock and target_datablock:
-                print(f"  - Debug: Attempting unlink. Source Datablock: {source_datablock.name} ({type(source_datablock).__name__}), Target Datablock: {target_datablock.name} ({type(target_datablock).__name__})")
                 try:
                     if rel_item.relationship_type == "COLLECTION_OBJECT_LINK" and isinstance(target_datablock, bpy.types.Collection) and isinstance(source_datablock, bpy.types.Object):
-                        print(f"  - Debug: COLLECTION_OBJECT_LINK check: target_datablock in source_datablock.users_collection = {target_datablock in source_datablock.users_collection}")
                         if target_datablock in source_datablock.users_collection:
                             target_datablock.objects.unlink(source_datablock)
                             print(f"  - Unlinked object '{source_datablock.name}' from collection '{target_datablock.name}'")

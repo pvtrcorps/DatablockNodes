@@ -105,7 +105,7 @@ class FN_link_to_scene(FNBaseNode, bpy.types.Node):
                     if obj.name not in target_scene.collection.objects:
                         target_scene.collection.objects.link(obj)
                         print(f"  - Linked object '{obj.name}' to scene '{target_scene.name}'")
-                        self._register_relationship(obj, target_scene, "OBJECT_SCENE_LINK")
+                        self._register_relationship(tree, obj, target_scene, "OBJECT_SCENE_LINK")
                     else:
                         print(f"  - Object '{obj.name}' already in scene '{target_scene.name}'")
                 else:

@@ -99,6 +99,11 @@ class FN_create_list(FNBaseNode, bpy.types.Node):
             new_output_socket = self.outputs.new(list_socket_type, "List")
             new_output_socket.display_shape = 'SQUARE'
 
+    def update_hash(self, hasher):
+        super().update_hash(hasher)
+        hasher.update(self.datablock_type.encode())
+        hasher.update(str(self.item_count).encode())
+
     def draw_buttons(self, context, layout):
         layout.prop(self, "datablock_type", text="Type")
         layout.prop(self, "item_count", text="Items")

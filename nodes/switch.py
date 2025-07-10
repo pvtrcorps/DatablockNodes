@@ -148,6 +148,13 @@ class FN_switch(FNBaseNode, bpy.types.Node):
             if self.data_type.endswith('_LIST'):
                 new_output_socket.display_shape = 'SQUARE'
 
+    def update_hash(self, hasher):
+        super().update_hash(hasher)
+        hasher.update(self.switch_type.encode())
+        hasher.update(self.data_type.encode())
+        if self.switch_type == 'INDEX':
+            hasher.update(str(self.item_count).encode())
+
     def draw_buttons(self, context, layout):
         layout.prop(self, "switch_type", text="Type")
         layout.prop(self, "data_type", text="Data")

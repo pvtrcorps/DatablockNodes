@@ -3,34 +3,58 @@ from ..nodes.base import FNBaseNode
 from .. import uuid_manager
 from ..sockets import FNSocketObject, FNSocketMesh, FNSocketArmature, FNSocketLight, FNSocketCamera
 
+_data_socket_map = {
+    'NONE': None,
+    'MESH': 'FNSocketMesh',
+    'ARMATURE': 'FNSocketArmature',
+    'LIGHT': 'FNSocketLight',
+    'CAMERA': 'FNSocketCamera',
+}
+
 class FN_set_object_data(FNBaseNode, bpy.types.Node):
     bl_idname = "FN_set_object_data"
     bl_label = "Set Object Data"
 
+    data_type: bpy.props.EnumProperty(
+        name="Data Type",
+        items=[
+            ('NONE', 'None', 'Clear object data'),
+            ('MESH', 'Mesh', 'Assign Mesh data'),
+            ('ARMATURE', 'Armature', 'Assign Armature data'),
+            ('LIGHT', 'Light', 'Assign Light data'),
+            ('CAMERA', 'Camera', 'Assign Camera data'),
+        ],
+        default='NONE',
+        update=lambda self, context: (self.update_sockets(context), self._trigger_update(context))
+    )
+
     def init(self, context):
         FNBaseNode.init(self, context)
         self.inputs.new('FNSocketObject', "Object").is_mutable = True
-        self.inputs.new('FNSocketMesh', "Mesh")
-        self.inputs.new('FNSocketArmature', "Armature")
-        self.inputs.new('FNSocketLight', "Light")
-        self.inputs.new('FNSocketCamera', "Camera")
-
         self.outputs.new('FNSocketObject', "Object")
+        self.update_sockets(context)
+
+    def update_sockets(self, context):
+        # Clear all existing data input sockets
+        for socket in list(self.inputs):
+            if socket.identifier != "Object":
+                self.inputs.remove(socket)
+        
+        # Add specific input socket based on data_type
+        socket_type = _data_socket_map.get(self.data_type)
+        if socket_type:
+            self.inputs.new(socket_type, "Data")
 
     def draw_buttons(self, context, layout):
-        pass
+        layout.prop(self, "data_type", text="Data Type")
 
     def update_hash(self, hasher):
-        # Hash the input Object
-        object_input = self.inputs.get('Object')
-        if object_input and object_input.is_linked:
-            pass
-        elif object_input and hasattr(object_input, 'default_value'):
-            hasher.update(str(object_input.default_value).encode())
+        super().update_hash(hasher)
+        hasher.update(self.data_type.encode())
 
-        # Hash the input Data (Mesh, Armature, Light, Camera)
-        for socket_name in ["Mesh", "Armature", "Light", "Camera"]:
-            data_input = self.inputs.get(socket_name)
+        # Hash the dynamically added Data input
+        if self.data_type != 'NONE':
+            data_input = self.inputs.get('Data')
             if data_input and data_input.is_linked:
                 pass
             elif data_input and hasattr(data_input, 'default_value'):
@@ -38,10 +62,6 @@ class FN_set_object_data(FNBaseNode, bpy.types.Node):
 
     def execute(self, **kwargs):
         obj = kwargs.get(self.inputs['Object'].identifier)
-        mesh_data = kwargs.get(self.inputs['Mesh'].identifier)
-        armature_data = kwargs.get(self.inputs['Armature'].identifier)
-        light_data = kwargs.get(self.inputs['Light'].identifier)
-        camera_data = kwargs.get(self.inputs['Camera'].identifier)
         tree = kwargs.get('tree')
 
         if not obj or not isinstance(obj, bpy.types.Object):
@@ -51,20 +71,13 @@ class FN_set_object_data(FNBaseNode, bpy.types.Node):
         new_data = None
         relationship_type = None
 
-        if mesh_data and isinstance(mesh_data, bpy.types.Mesh):
-            new_data = mesh_data
-            relationship_type = "OBJECT_DATA_ASSIGN_MESH"
-        elif armature_data and isinstance(armature_data, bpy.types.Armature):
-            new_data = armature_data
-            relationship_type = "OBJECT_DATA_ASSIGN_ARMATURE"
-        elif light_data and isinstance(light_data, bpy.types.Light):
-            new_data = light_data
-            relationship_type = "OBJECT_DATA_ASSIGN_LIGHT"
-        elif camera_data and isinstance(camera_data, bpy.types.Camera):
-            new_data = camera_data
-            relationship_type = "OBJECT_DATA_ASSIGN_CAMERA"
+        if self.data_type != 'NONE':
+            data_input_socket = self.inputs.get('Data')
+            if data_input_socket:
+                new_data = kwargs.get(data_input_socket.identifier)
+                relationship_type = f"OBJECT_DATA_ASSIGN_{self.data_type}"
         
-        if new_data:
+        if new_data and isinstance(new_data, bpy.types.ID):
             obj.data = new_data
             print(f"  - Set data of object '{obj.name}' to '{new_data.name}' ({type(new_data).__name__})")
             
@@ -75,7 +88,7 @@ class FN_set_object_data(FNBaseNode, bpy.types.Node):
             new_rel_item.target_uuid = uuid_manager.get_uuid(new_data)
             new_rel_item.relationship_type = relationship_type
         else:
-            # If no data is provided, set object.data to None and remove any existing relationship
+            # If no data is provided or data_type is NONE, set object.data to None and remove any existing relationship
             if obj.data is not None:
                 print(f"  - Clearing data of object '{obj.name}'")
                 obj.data = None

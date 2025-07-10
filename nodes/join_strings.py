@@ -35,6 +35,10 @@ class FN_join_strings(FNBaseNode, bpy.types.Node):
         # Add output string socket
         self.outputs.new('FNSocketString', "Output")
 
+    def update_hash(self, hasher):
+        super().update_hash(hasher)
+        hasher.update(str(self.string_count).encode())
+
     def draw_buttons(self, context, layout):
         layout.prop(self, "string_count", text="Strings")
 

@@ -11,8 +11,10 @@ class FN_set_object_parent(FNBaseNode, bpy.types.Node):
         FNBaseNode.init(self, context)
         self.inputs.new('FNSocketObject', "Parent")
         self.inputs.new('FNSocketObjectList', "Childs").is_mutable = True
+        self.inputs['Childs'].display_shape = 'SQUARE'
 
-        self.outputs.new('FNSocketObjectList', "Childs")
+        self.outputs.new('FNSocketObjectList', "Parent and Childs").is_mutable = False
+        self.outputs['Parent and Childs'].display_shape = 'SQUARE'
 
     def draw_buttons(self, context, layout):
         pass
@@ -81,4 +83,9 @@ class FN_set_object_parent(FNBaseNode, bpy.types.Node):
             
             processed_childs.append(child_obj)
 
-        return {self.outputs[0].identifier: processed_childs}
+        output_list = []
+        if parent_obj:
+            output_list.append(parent_obj)
+        output_list.extend(processed_childs)
+
+        return {self.outputs[0].identifier: output_list}

@@ -103,6 +103,13 @@ class FN_set_datablock_properties(FNBaseNode, bpy.types.Node):
                 if socket_bl_idname:
                     self.inputs.new(socket_bl_idname, prop_item.name)
 
+    def update_hash(self, hasher):
+        super().update_hash(hasher)
+        hasher.update(self.datablock_type.encode())
+        for prop_item in self.properties_to_set:
+            hasher.update(prop_item.rna_path.encode())
+            hasher.update(prop_item.socket_type.encode())
+
     def draw_buttons(self, context, layout):
         layout.prop(self, "datablock_type")
 

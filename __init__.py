@@ -50,6 +50,8 @@ class DatablockTree(bpy.types.NodeTree):
     fn_relationships_map: bpy.props.CollectionProperty(type=FNRelationshipItem)
     # Property to store the execution cache
     fn_execution_cache: bpy.props.CollectionProperty(type=properties.FNExecutionCacheEntry)
+    # Property to store the hash of the last evaluated state for performance optimization
+    fn_last_evaluated_hash: bpy.props.StringProperty(name="Last Evaluated Hash", default="")
 
 # --- UI ---
 class DATABLOCK_PT_panel(bpy.types.Panel):

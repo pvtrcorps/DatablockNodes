@@ -42,7 +42,8 @@ class FNBaseNode(bpy.types.Node):
         """Updates the hash with the node's internal properties.
         Subclasses should override this to include their specific properties.
         """
-        # Add the node's own ID to the hash to make it unique
+        # Add the node's own ID and bl_idname to the hash to make it unique and type-specific
         hasher.update(self.fn_node_id.encode())
+        hasher.update(self.bl_idname.encode())
 
     

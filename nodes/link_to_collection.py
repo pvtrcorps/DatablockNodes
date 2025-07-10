@@ -63,6 +63,8 @@ class FN_link_to_collection(FNBaseNode, bpy.types.Node):
 
         tree = kwargs.get('tree')
 
+        print(f"[FN_link_to_collection] Debug: objects_to_link (raw): {objects_to_link}, Type: {type(objects_to_link)}")
+
         if not target_collection:
             print(f"  - Warning: No target collection provided to {self.name}. Skipping.")
             return None
@@ -87,6 +89,7 @@ class FN_link_to_collection(FNBaseNode, bpy.types.Node):
             if not isinstance(objects_to_link, list):
                 objects_to_link = [objects_to_link]
             for obj in objects_to_link:
+                print(f"[FN_link_to_collection] Debug: Processing object: {obj}, Type: {type(obj)}")
                 if obj and isinstance(obj, bpy.types.Object):
                     # More robust check for target_collection validity
                     if obj.name not in target_collection.objects:

@@ -123,6 +123,11 @@ class FN_get_item_from_list(FNBaseNode, bpy.types.Node):
         else:
             print(f"Warning: No single item socket defined for type {self.list_type}")
 
+    def update_hash(self, hasher):
+        super().update_hash(hasher)
+        hasher.update(self.list_type.encode())
+        hasher.update(self.selection_mode.encode())
+
     def draw_buttons(self, context, layout):
         layout.prop(self, "list_type", text="List Type")
         layout.prop(self, "selection_mode", text="Mode")

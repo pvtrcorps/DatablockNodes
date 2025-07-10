@@ -63,6 +63,11 @@ class FN_import_datablock(FNBaseNode, bpy.types.Node):
         if socket_type:
             self.outputs.new(socket_type, "Datablock")
 
+    def update_hash(self, hasher):
+        super().update_hash(hasher)
+        hasher.update(self.datablock_type.encode())
+        hasher.update(self.datablock_name.encode())
+
     def draw_buttons(self, context, layout):
         layout.prop(self, "datablock_type", text="Type")
         layout.prop(self, "datablock_name", text="Name")
