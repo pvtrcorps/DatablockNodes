@@ -661,6 +661,14 @@ def _diff_and_sync(tree: bpy.types.NodeTree, required_state: dict, current_state
             
             remover_collection = removal_map.get(type(datablock))
             if remover_collection:
+                # HACK: Do not garbage collect scenes automatically to avoid the ReferenceError
+                # that occurs when a scene is deleted right after being copied.
+                if isinstance(datablock, bpy.types.Scene):
+                    print(f"  - GC Info: Skipping automatic garbage collection for scene '{datablock.name}' to prevent potential errors.")
+                    # We can set use_fake_user to False so Blender's internal GC can get it on reload.
+                    datablock.use_fake_user = False
+                    continue
+
                 try:
                     remover_collection.remove(datablock)
                 except (ReferenceError, RuntimeError):

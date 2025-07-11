@@ -21,7 +21,7 @@ from . import operators
 from . import sockets
 from . import properties
 from . import reconciler
-from .nodes import new_datablock, set_datablock_name, link_to_scene, create_list, new_value, link_to_collection, join_strings, split_string, value_to_string, switch, get_item_from_list, import_datablock, read_file, write_file, set_datablock_properties, set_datablock_cycles_properties, set_object_data, set_scene_world, set_object_material, set_object_parent
+from .nodes import new_datablock, set_datablock_name, link_to_scene, create_list, new_value, link_to_collection, join_strings, split_string, value_to_string, switch, get_item_from_list, import_datablock, read_file, write_file, set_datablock_properties, set_datablock_cycles_properties, set_object_data, set_scene_world, set_object_material, set_object_parent, derive_datablock, get_datablock_content
 
 # --- State Map Item ---
 class FNStateMapItem(bpy.types.PropertyGroup):
@@ -75,6 +75,8 @@ node_categories = [
     NodeCategory("DATABLOCK_NODES", "Nodes", items=[
         NodeItem("FN_new_datablock"),
         NodeItem("FN_import_datablock"),
+        NodeItem("FN_derive_datablock"),
+        NodeItem("FN_get_datablock_content"),
         NodeItem("FN_new_value"),
         NodeItem("FN_set_datablock_name"),
         NodeItem("FN_link_to_scene"),
@@ -106,6 +108,8 @@ classes = (
     DATABLOCK_PT_panel,
     new_datablock.FN_new_datablock,
     import_datablock.FN_import_datablock,
+    derive_datablock.FN_derive_datablock,
+    get_datablock_content.FN_get_datablock_content,
     new_value.FN_new_value,
     set_datablock_name.FN_set_datablock_name,
     link_to_scene.FN_link_to_scene,
