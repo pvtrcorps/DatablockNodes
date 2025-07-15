@@ -7,6 +7,7 @@ from ..sockets import (
     FNSocketMesh, FNSocketLight, FNSocketMaterial, FNSocketObjectList, FNSocketCollectionList,
     FNSocketMaterialList
 )
+from .. import logger
 
 # Maps the input datablock type to its corresponding socket type
 _input_socket_map = {
@@ -95,7 +96,7 @@ class FN_get_datablock_content(FNBaseNode, bpy.types.Node):
         source_datablock = uuid_manager.find_datablock_by_uuid(source_uuid)
 
         if not source_datablock:
-            print(f"[FN_get_datablock_content] Warning: Source datablock with UUID {source_uuid} not found.")
+            logger.log(f"[FN_get_datablock_content] Warning: Source datablock with UUID {source_uuid} not found.")
             return {}
 
         results = {}

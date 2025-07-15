@@ -8,6 +8,7 @@ from ..sockets import (
 )
 from .. import uuid_manager
 from ..properties import _datablock_socket_map, _datablock_creation_map
+from .. import logger
 
 def _update_node(self, context):
     self.update_sockets(context)
@@ -131,5 +132,5 @@ class FN_new_datablock(FNBaseNode, bpy.types.Node):
                 'create_datablock': creation_params # Declare the creation intent separately
             }
         }
-        print(f"[FN_DEBUG] New Datablock: Returning {return_dict[output_socket_identifier]} for socket {output_socket_identifier}")
+        logger.log(f"[FN_DEBUG] New Datablock: Returning {return_dict[output_socket_identifier]} for socket {output_socket_identifier}")
         return return_dict

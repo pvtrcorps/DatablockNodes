@@ -10,6 +10,7 @@ from ..sockets import (
     FNSocketText, FNSocketWorkSpace, FNSocketWorld, FNSocketArmature, FNSocketAction
 )
 from .. import uuid_manager
+from .. import logger
 
 _datablock_socket_map = {
     'SCENE': 'FNSocketScene',
@@ -84,7 +85,7 @@ class FN_derive_datablock(FNBaseNode, bpy.types.Node):
     def execute(self, **kwargs):
         source_uuid = kwargs.get(self.inputs['Source'].identifier)
         new_name = kwargs.get(self.inputs['Name'].identifier)
-        print(f"[FN_DEBUG] Derive Datablock: Received source_uuid = {source_uuid} (Type: {type(source_uuid).__name__})")
+        logger.log(f"[FN_DEBUG] Derive Datablock: Received source_uuid = {source_uuid} (Type: {type(source_uuid).__name__})")
 
         if not source_uuid:
             # If no source, declare an empty state for this node's output

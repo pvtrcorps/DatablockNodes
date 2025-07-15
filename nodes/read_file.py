@@ -11,6 +11,7 @@ from ..sockets import (
     FNSocketMeshList, FNSocketNodeTreeList, FNSocketTextList, FNSocketWorkSpaceList,
     FNSocketStringList, FNSocketViewLayerList
 )
+from .. import logger
 
 # Define which datablock types the node will handle and their corresponding socket types
 _datablock_types_to_read = {
@@ -71,7 +72,7 @@ class FN_read_file(FNBaseNode, bpy.types.Node):
         link_flag = kwargs.get(self.inputs['Link'].identifier)
 
         if not os.path.exists(file_path):
-            print(f"[FN_read_file] Error: File not found at '{file_path}'")
+            logger.log(f"[FN_read_file] Error: File not found at '{file_path}'")
             # Return empty outputs and an empty state declaration
             output = {}
             for db_type_name, socket_type_name in _datablock_types_to_read.items():
@@ -79,7 +80,7 @@ class FN_read_file(FNBaseNode, bpy.types.Node):
             return {**output, 'states': {self.fn_node_id: ""}}
 
         # Load new datablocks
-        print(f"[FN_read_file] Reading from '{file_path}' (Link: {link_flag})")
+        logger.log(f"[FN_read_file] Reading from '{file_path}' (Link: {link_flag})")
         loaded_datablocks = []
         with bpy.data.libraries.load(file_path, link=link_flag) as (data_from, data_to):
             for db_type_name in _datablock_types_to_read.keys():

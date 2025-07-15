@@ -1,6 +1,7 @@
 import bpy
 from .base import FNBaseNode
 from .. import uuid_manager
+from .. import logger
 
 # This maps the EnumProperty items to bpy.data collections and socket types
 _datablock_map = {
@@ -76,14 +77,14 @@ class FN_import_datablock(FNBaseNode, bpy.types.Node):
         collection_name, _ = _datablock_map.get(self.datablock_type)
         
         if not collection_name or not self.datablock_name:
-            print(f"[FN_import_datablock] Error: Missing datablock type or name.")
+            logger.log(f"[FN_import_datablock] Error: Missing datablock type or name.")
             return None
 
         # Find the datablock in bpy.data
         datablock = getattr(bpy.data, collection_name).get(self.datablock_name)
 
         if not datablock:
-            print(f"[FN_import_datablock] Error: Datablock '{self.datablock_name}' of type '{self.datablock_type}' not found.")
+            logger.log(f"[FN_import_datablock] Error: Datablock '{self.datablock_name}' of type '{self.datablock_type}' not found.")
             return None
 
         # Ensure the datablock has a UUID. If not, assign one.

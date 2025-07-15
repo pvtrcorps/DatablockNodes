@@ -6,6 +6,7 @@ from bpy.types import bpy_prop_array
 from bpy.app.handlers import persistent
 from . import uuid_manager
 from .properties import _datablock_creation_map
+from . import logger
 
 _timer_func = None
 _is_executing = False
@@ -19,7 +20,7 @@ def _set_nested_property(base, path, value):
         setattr(obj, parts[-1], value)
         return True
     except (AttributeError, TypeError) as e:
-        print(f"[FN_ERROR] Could not set nested property '{path}' on {base.name}: {e}")
+        logger.log(f"[FN_ERROR] Could not set nested property '{path}' on {base.name}: {e}")
         return False
 
 def _get_nested_property(base, path):
@@ -34,12 +35,12 @@ def _get_nested_property(base, path):
 
 @persistent
 def datablock_nodes_depsgraph_handler(scene, depsgraph):
-    print("\n--- [FN] Depsgraph Handler Triggered ---")
+    logger.log("--- [FN] Depsgraph Handler Triggered ---")
     global _timer_func, _is_executing
 
 
     if _is_executing:
-        print("[FN_DEBUG] Execution in progress. Re-entry blocked.")
+        logger.log("[FN_DEBUG] Execution in progress. Re-entry blocked.")
         return
 
     active_tree = next((tree for tree in bpy.data.node_groups if hasattr(tree, 'bl_idname') and tree.bl_idname == 'DatablockTreeType' and any(sock.is_final_active for node in tree.nodes for sock in node.outputs)), None)
@@ -49,17 +50,17 @@ def datablock_nodes_depsgraph_handler(scene, depsgraph):
 
     def execution_wrapper():
         global _timer_func, _is_executing
-        print("[FN_DEBUG] LOCKING execution engine.")
+        logger.log("[FN_DEBUG] LOCKING execution engine.")
         _is_executing = True
         try:
             trigger_execution(active_tree)
-            print("[FN_DEBUG] Execution finished successfully.")
+            logger.log("[FN_DEBUG] Execution finished successfully.")
         except Exception as e:
-            print(f"[FN_ERROR] An exception occurred during execution: {e}")
+            logger.log(f"[FN_ERROR] An exception occurred during execution: {e}")
             import traceback
             traceback.print_exc()
         finally:
-            print("[FN_DEBUG] UNLOCKING execution engine.")
+            logger.log("[FN_DEBUG] UNLOCKING execution engine.")
             _is_executing = False
             _timer_func = None
         return None
@@ -71,7 +72,7 @@ def datablock_nodes_depsgraph_handler(scene, depsgraph):
     bpy.app.timers.register(_timer_func, first_interval=0.01)
 
 def trigger_execution(tree: bpy.types.NodeTree):
-    print(f"--- Triggering execution for tree '{tree.name}' ---")
+    logger.log(f"--- Triggering execution for tree '{tree.name}' ---")
     """
     Triggers an evaluation of the active branch, builds an active plan, and
     synchronizes the state in Blender by destroying inactive datablocks and
@@ -80,16 +81,16 @@ def trigger_execution(tree: bpy.types.NodeTree):
     # 1. Identify the active socket. If none, do nothing.
     active_socket = next((sock for node in tree.nodes for sock in node.outputs if sock.is_final_active), None)
     if not active_socket:
-        # Optional: Could add logic here to clean up all managed datablocks if no socket is active.
-        # For now, we do nothing.
         return
 
     # 2. Get the nodes involved in the active branch.
     active_branch_nodes = _get_active_branch_node_ids(active_socket)
+    logger.log(f"[FN_DEBUG] Active branch nodes: {active_branch_nodes}")
 
     # 3. Evaluate the active branch to get the execution plan.
-    # This new function will only evaluate the necessary nodes.
+    logger.log("[FN_DEBUG] Evaluating active branch...")
     session_cache, active_uuids, active_states, active_relationships, active_assignments, creation_declarations, load_file_declarations = _evaluate_active_branch(tree, active_socket, active_branch_nodes)
+    logger.log(f"[FN_DEBUG] Active plan built. UUIDs: {active_uuids}")
 
     # Process LOAD_FILE declarations before synchronization
     for decl in load_file_declarations:
@@ -99,7 +100,7 @@ def trigger_execution(tree: bpy.types.NodeTree):
         node_id = decl['node_id']
 
         if not os.path.exists(file_path):
-            print(f"[FN_read_file] Error: File not found at '{file_path}'")
+            logger.log(f"[FN_read_file] Error: File not found at '{file_path}'")
             continue
 
         loaded_uuids = []
@@ -120,13 +121,12 @@ def trigger_execution(tree: bpy.types.NodeTree):
             map_item = tree.fn_state_map.add()
             map_item.node_id = node_id
         map_item.datablock_uuids = ",".join(loaded_uuids)
-        print(f"[FN_DEBUG] _synchronize_blender_state: Loaded datablocks from {file_path}. UUIDs: {loaded_uuids}")
+        logger.log(f"[FN_DEBUG] _synchronize_blender_state: Loaded datablocks from {file_path}. UUIDs: {loaded_uuids}")
 
     # Force a Blender update to ensure newly created datablocks are registered
     bpy.context.view_layer.update()
 
     # 4. Synchronize Blender's state with the active plan.
-    # This function will be heavily modified to handle destruction and creation.
     _synchronize_blender_state(tree, active_uuids, active_states, active_relationships, active_assignments, creation_declarations)
 
     # 5. Update UI to highlight the active path.
@@ -171,7 +171,7 @@ def _serialize_overrides(datablock) -> str:
         
         # 6. Fallback: If we reach here, it's an unhandled type.
         # This should ideally not happen for data we intend to serialize.
-        print(f"[FN_WARNING] _to_json_safe: Unhandled type for JSON serialization: {type(value).__name__} ({value}). Omitting property.")
+        logger.log(f"[FN_WARNING] _to_json_safe: Unhandled type for JSON serialization: {type(value).__name__} ({value}). Omitting property.")
         return None # Omit the property from serialization
 
     overrides = {}
@@ -222,7 +222,7 @@ def _serialize_overrides(datablock) -> str:
         except AttributeError:
             continue
 
-    print(f"[FN_DEBUG] _serialize_overrides: Final overrides dict: {overrides}")
+    logger.log(f"[FN_DEBUG] _serialize_overrides for {datablock.name} ({uuid_manager.get_uuid(datablock)}): {overrides}")
     return json.dumps(overrides) if overrides else "{}"
 
 def _apply_overrides(datablock, tree, datablock_uuid):
@@ -235,8 +235,9 @@ def _apply_overrides(datablock, tree, datablock_uuid):
 
     try:
         overrides = json.loads(override_entry.override_data_json)
+        logger.log(f"[FN_DEBUG] Applying overrides for {datablock.name} ({datablock_uuid}): {overrides}")
     except json.JSONDecodeError:
-        print(f"[FN_ERROR] Could not decode override JSON for {datablock_uuid}")
+        logger.log(f"[FN_ERROR] Could not decode override JSON for {datablock_uuid}")
         return
 
     for key, value in overrides.items():
@@ -264,7 +265,7 @@ def _apply_overrides(datablock, tree, datablock_uuid):
             else:
                 _set_nested_property(datablock, key, value)
         except (AttributeError, TypeError, ValueError) as e:
-            print(f"[FN_WARNING] Could not apply override for property '{key}' on {datablock.name}: {e}")
+            logger.log(f"[FN_WARNING] Could not apply override for property '{key}' on {datablock.name}: {e}")
 
 
 def _evaluate_active_branch(tree: bpy.types.NodeTree, active_socket: bpy.types.NodeSocket, active_branch_nodes: set):
@@ -285,8 +286,8 @@ def _evaluate_active_branch(tree: bpy.types.NodeTree, active_socket: bpy.types.N
 
 
 def _synchronize_blender_state(tree, active_uuids, active_states, active_relationships, active_assignments, creation_declarations):
-    print("--- Synchronizing Blender State ---")
-    print(f"Active UUIDs in plan: {active_uuids}")
+    logger.log("--- Synchronizing Blender State ---")
+    logger.log(f"Active UUIDs in plan: {active_uuids}")
     """
     Takes the active plan and synchronizes Blender's state.
     Destroys datablocks not in the active plan and creates/updates those that are.
@@ -294,7 +295,7 @@ def _synchronize_blender_state(tree, active_uuids, active_states, active_relatio
     # --- 1. Destruction Phase ---
     all_managed_datablocks = uuid_manager.get_all_managed_datablocks()
     uuids_to_destroy = set(all_managed_datablocks.keys()) - active_uuids
-    print(f"UUIDs to DESTROY: {uuids_to_destroy}")
+    logger.log(f"UUIDs to DESTROY: {uuids_to_destroy}")
 
     if uuids_to_destroy:
         for uuid_to_destroy in uuids_to_destroy:
@@ -303,75 +304,63 @@ def _synchronize_blender_state(tree, active_uuids, active_states, active_relatio
                 continue
 
             # a. Serialize overrides before destruction
+            logger.log(f"[FN_DEBUG] Serializing overrides for {datablock_to_destroy.name} ({uuid_to_destroy})")
             override_json = _serialize_overrides(datablock_to_destroy)
             if override_json and override_json != "{}":
-                print(f"[FN_DEBUG] _synchronize_blender_state: Serialized overrides for {datablock_to_destroy.name} ({uuid_to_destroy}): {override_json}")
                 override_entry = next((item for item in tree.fn_override_map if item.datablock_uuid == uuid_to_destroy), None)
                 if not override_entry:
                     override_entry = tree.fn_override_map.add()
                     override_entry.datablock_uuid = uuid_to_destroy
-                    print(f"[FN_DEBUG] _synchronize_blender_state: Added new override entry for {uuid_to_destroy} to fn_override_map.")
                 override_entry.datablock_type = datablock_to_destroy.bl_rna.identifier
                 override_entry.override_data_json = override_json
-                print(f"[FN_DEBUG] _synchronize_blender_state: Updated override entry for {uuid_to_destroy} in fn_override_map.")
 
             # b. Remove from Blender
             datablock_type_name = datablock_to_destroy.bl_rna.identifier
             collection = getattr(bpy.data, datablock_type_name.lower() + 's', None)
             if collection:
                 try:
+                    logger.log(f"[FN_DEBUG] Removing datablock {datablock_to_destroy.name} ({uuid_to_destroy}) from Blender.")
                     collection.remove(datablock_to_destroy)
-                    print(f"[FN_DEBUG] _synchronize_blender_state: Removed datablock {datablock_to_destroy.name} ({uuid_to_destroy}) from Blender.")
                 except (ReferenceError, RuntimeError) as e:
-                    print(f"[FN_WARNING] Could not remove datablock {uuid_to_destroy}: {e}")
+                    logger.log(f"[FN_WARNING] Could not remove datablock {uuid_to_destroy}: {e}")
     
     # --- 2. Clean up persistent maps from destroyed datablocks ---
-    # This is a simplified cleanup. A more robust version might be needed.
-    # We remove any entry whose UUID is no longer managed.
     all_managed_uuids = set(uuid_manager.get_all_managed_datablocks().keys())
     
     # Clean state map
     indices_to_remove = [i for i, item in enumerate(tree.fn_state_map) for uuid in item.datablock_uuids.split(',') if uuid and uuid not in all_managed_uuids]
     if indices_to_remove:
-        print(f"[FN_DEBUG] _synchronize_blender_state: Cleaning up fn_state_map. Indices to remove: {indices_to_remove}")
-    for i in sorted(list(set(indices_to_remove)), reverse=True):
-        tree.fn_state_map.remove(i)
+        for i in sorted(list(set(indices_to_remove)), reverse=True):
+            tree.fn_state_map.remove(i)
 
     # Clean relationship map
     indices_to_remove = [i for i, item in enumerate(tree.fn_relationships_map) if item.source_uuid not in all_managed_uuids or item.target_uuid not in all_managed_uuids]
     if indices_to_remove:
-        print(f"[FN_DEBUG] _synchronize_blender_state: Cleaning up fn_relationships_map. Indices to remove: {indices_to_remove}")
-    for i in sorted(list(set(indices_to_remove)), reverse=True):
-        tree.fn_relationships_map.remove(i)
+        for i in sorted(list(set(indices_to_remove)), reverse=True):
+            tree.fn_relationships_map.remove(i)
 
     # Clean property assignments map
     indices_to_remove = [i for i, item in enumerate(tree.fn_property_assignments_map) if item.target_uuid not in all_managed_uuids]
     if indices_to_remove:
-        print(f"[FN_DEBUG] _synchronize_blender_state: Cleaning up fn_property_assignments_map. Indices to remove: {indices_to_remove}")
-    for i in sorted(list(set(indices_to_remove)), reverse=True):
-        tree.fn_property_assignments_map.remove(i)
+        for i in sorted(list(set(indices_to_remove)), reverse=True):
+            tree.fn_property_assignments_map.remove(i)
 
     # Clean override map
-    indices_to_remove = [i for i, item in enumerate(tree.fn_override_map) if item.datablock_uuid not in active_uuids]
-    if indices_to_remove:
-        print(f"[FN_DEBUG] _synchronize_blender_state: Cleaning up fn_override_map. Indices to remove: {indices_to_remove}")
-    for i in sorted(list(set(indices_to_remove)), reverse=True):
-        tree.fn_override_map.remove(i)
+    
 
     # --- 3. Creation/Update Phase ---
-    # Sort creation declarations topologically to respect dependencies
     sorted_creation_uuids = _topological_sort_creation_declarations(creation_declarations)
+    logger.log(f"[FN_DEBUG] Creation order: {sorted_creation_uuids}")
 
     for uuid in sorted_creation_uuids:
-        # Only process if this UUID is part of the active plan
         if uuid not in active_uuids:
             continue
 
         datablock = uuid_manager.find_datablock_by_uuid(uuid)
         if not datablock:
-            # Datablock does not exist, create it using the stored declaration
             creation_declaration = creation_declarations.get(uuid)
             if creation_declaration:
+                logger.log(f"[FN_DEBUG] Creating datablock {uuid} with declaration: {creation_declaration}")
                 if creation_declaration['type'] == 'DERIVE':
                     source_uuid = creation_declaration['source_uuid']
                     new_name = creation_declaration['new_name']
@@ -384,9 +373,8 @@ def _synchronize_blender_state(tree, active_uuids, active_states, active_relatio
                             datablock.name = new_name
                         if isinstance(datablock, bpy.types.Scene):
                             datablock.use_extra_user = True
-                        print(f"[FN_DEBUG] _synchronize_blender_state: Derived new datablock {datablock.name} ({uuid}) from {source_uuid}.")
                     else:
-                        print(f"[FN_WARNING] Source datablock {source_uuid} not found for derivation of {uuid}.")
+                        logger.log(f"[FN_WARNING] Source datablock {source_uuid} not found for derivation of {uuid}.")
                         continue
                 elif creation_declaration['type'] == 'COPY':
                     source_uuid = creation_declaration['source_uuid']
@@ -395,17 +383,14 @@ def _synchronize_blender_state(tree, active_uuids, active_states, active_relatio
                     if source_datablock:
                         datablock = source_datablock.copy()
                         uuid_manager.set_uuid(datablock, target_uuid=uuid)
-                        # Copy overrides from original datablock to the new one
                         original_override_entry = next((item for item in tree.fn_override_map if item.datablock_uuid == source_uuid), None)
                         if original_override_entry:
                             new_override_entry = tree.fn_override_map.add()
                             new_override_entry.datablock_uuid = uuid
                             new_override_entry.datablock_type = original_override_entry.datablock_type
                             new_override_entry.override_data_json = original_override_entry.override_data_json
-                            print(f"[FN_DEBUG] Copied overrides from {source_uuid} to new branched datablock {uuid}")
-                        print(f"[FN_DEBUG] _synchronize_blender_state: Copied datablock {datablock.name} ({uuid}) from {source_uuid}.")
                     else:
-                        print(f"[FN_WARNING] Source datablock {source_uuid} not found for copy of {uuid}.")
+                        logger.log(f"[FN_WARNING] Source datablock {source_uuid} not found for copy of {uuid}.")
                         continue
                 else:
                     datablock_type = creation_declaration['type']
@@ -419,38 +404,38 @@ def _synchronize_blender_state(tree, active_uuids, active_states, active_relatio
                         else:
                             datablock = creation_func(uuid)
                         
-                        # Assign the declared UUID to the newly created datablock
                         uuid_manager.set_uuid(datablock, target_uuid=uuid)
 
                         if datablock_type == 'SCENE':
                             datablock.use_extra_user = True
-
-                        print(f"[FN_DEBUG] _synchronize_blender_state: Created new datablock {datablock.name} ({uuid}).")
                     else:
-                        print(f"[FN_ERROR] Unknown datablock type for creation: {datablock_type}")
+                        logger.log(f"[FN_ERROR] Unknown datablock type for creation: {datablock_type}")
                         continue
             else:
-                print(f"[FN_WARNING] No creation declaration found for UUID {uuid}. Skipping creation.")
+                logger.log(f"[FN_WARNING] No creation declaration found for UUID {uuid}. Skipping creation.")
                 continue
 
         if datablock:
-            # This is a newly created or existing datablock. Apply overrides.
-            print(f"[FN_DEBUG] _synchronize_blender_state: Attempting to apply overrides for datablock {datablock.name} ({uuid}).")
+            logger.log(f"[FN_DEBUG] Applying overrides for datablock {datablock.name} ({uuid}).")
             _apply_overrides(datablock, tree, uuid)
             # After applying, we can remove the override entry as it's now "live"
-            override_entry_idx = tree.fn_override_map.find(uuid)
+            override_entry_idx = -1
+            for i, item in enumerate(tree.fn_override_map):
+                if item.datablock_uuid == uuid:
+                    override_entry_idx = i
+                    break
+            
             if override_entry_idx != -1:
-                print(f"[FN_DEBUG] _synchronize_blender_state: Removing override entry for {uuid} from fn_override_map after application.")
+                logger.log(f"[FN_DEBUG] Removing override entry for {uuid} from fn_override_map after application.")
                 tree.fn_override_map.remove(override_entry_idx)
 
     # --- 4. Synchronize States, Relationships, and Properties (Defensive Writes) ---
-    print("[FN_DEBUG] Phase 4: Synchronizing maps defensively.")
+    logger.log("[FN_DEBUG] Phase 4: Synchronizing maps defensively.")
 
     # State Map Synchronization
     current_states = {item.node_id: item.datablock_uuids for item in tree.fn_state_map}
     for node_id, uuids in active_states.items():
         if current_states.get(node_id) != uuids:
-            print(f"    [STATE_MAP] Updating state for node {node_id}.")
             map_item = next((item for item in tree.fn_state_map if item.node_id == node_id), None)
             if not map_item:
                 map_item = tree.fn_state_map.add()
@@ -464,7 +449,6 @@ def _synchronize_blender_state(tree, active_uuids, active_states, active_relatio
     rels_to_add = active_rel_tuples - current_relationships
     
     for rel_tuple in rels_to_add:
-        print(f"    [REL_MAP] Adding relationship: {rel_tuple}")
         _link_relationship(rel_tuple)
         new_rel = tree.fn_relationships_map.add()
         new_rel.source_uuid, new_rel.target_uuid, new_rel.relationship_type = rel_tuple
@@ -476,21 +460,16 @@ def _synchronize_blender_state(tree, active_uuids, active_states, active_relatio
 
         prop_name = assign['property_name']
         
-        # Determine the value from the execution plan
         plan_value = None
         if assign['value_type'] == 'UUID':
             plan_value = uuid_manager.find_datablock_by_uuid(assign['value_uuid'])
         elif assign['value_type'] == 'LITERAL':
             plan_value = json.loads(assign['value_json'])
 
-        # Get the current value directly from the datablock
         current_value = _get_nested_property(target_db, prop_name)
 
-        # THE CRITICAL CHECK: Only write if the plan differs from the reality
         if current_value != plan_value:
-            print(f"    [PROP_ASSIGN] Updating property '{prop_name}' on {target_db.name}. From '{current_value}' to '{plan_value}'")
             if _set_nested_property(target_db, prop_name, plan_value):
-                # Update the persistent map since we made a change
                 map_item = next((item for item in tree.fn_property_assignments_map if item.target_uuid == assign['target_uuid'] and item.property_name == prop_name), None)
                 if not map_item:
                     map_item = tree.fn_property_assignments_map.add()
@@ -560,22 +539,22 @@ def update_ui_for_active_socket(tree: bpy.types.NodeTree, active_socket: bpy.typ
     # We get it from the session_cache, which holds the actual output of the node's execution
     node_results = session_cache.get(active_socket.node.fn_node_id)
     if not node_results:
-        print(f"[FN_DEBUG] update_ui_for_active_socket: No node results found for {active_socket.node.fn_node_id}")
+        logger.log(f"[FN_DEBUG] update_ui_for_active_socket: No node results found for {active_socket.node.fn_node_id}")
         return
 
     final_output_uuid = node_results.get(active_socket.identifier)
     if not final_output_uuid:
-        print(f"[FN_DEBUG] update_ui_for_active_socket: No output UUID found for socket {active_socket.identifier} on node {active_socket.node.fn_node_id}")
+        logger.log(f"[FN_DEBUG] update_ui_for_active_socket: No output UUID found for socket {active_socket.identifier} on node {active_socket.node.fn_node_id}")
         return
 
-    print(f"[FN_DEBUG] update_ui_for_active_socket: final_output_uuid = {final_output_uuid}")
+    logger.log(f"[FN_DEBUG] update_ui_for_active_socket: final_output_uuid = {final_output_uuid}")
 
     # Find the actual datablock in Blender using its UUID
     final_output_val = uuid_manager.find_datablock_by_uuid(final_output_uuid)
-    print(f"[FN_DEBUG] update_ui_for_active_socket: final_output_val = {final_output_val} (Type: {type(final_output_val).__name__ if final_output_val else 'None'})")
+    logger.log(f"[FN_DEBUG] update_ui_for_active_socket: final_output_val = {final_output_val} (Type: {type(final_output_val).__name__ if final_output_val else 'None'})")
 
     if isinstance(final_output_val, bpy.types.Scene):
-        print(f"[FN_DEBUG] update_ui_for_active_socket: Setting bpy.context.window.scene to {final_output_val.name}")
+        logger.log(f"[FN_DEBUG] update_ui_for_active_socket: Setting bpy.context.window.scene to {final_output_val.name}")
         bpy.context.window.scene = final_output_val
 
 def _evaluate_node(tree, node, session_cache, required_uuids, required_relationships, required_states, required_assignments, creation_declarations, load_file_declarations):
@@ -724,7 +703,7 @@ def _link_relationship(rel_tuple):
         elif rel_type == 'COLLECTION_SCENE_LINK' and isinstance(target_db, bpy.types.Scene) and source_db.name not in target_db.collection.children:
             target_db.collection.children.link(source_db)
     except (RuntimeError, ReferenceError) as e:
-        print(f"  - Warning: Failed to link relationship {rel_tuple}: {e}")
+        logger.log(f"  - Warning: Failed to link relationship {rel_tuple}: {e}")
 
 def _unlink_relationship(rel_tuple):
     source_uuid, target_uuid, rel_type = rel_tuple
@@ -742,7 +721,7 @@ def _unlink_relationship(rel_tuple):
         elif rel_type == 'COLLECTION_SCENE_LINK' and isinstance(target_db, bpy.types.Scene) and source_db.name in target_db.collection.children:
             target_db.collection.children.unlink(source_db)
     except (RuntimeError, ReferenceError) as e:
-        print(f"  - Warning: Failed to unlink relationship {rel_tuple}: {e}")
+        logger.log(f"  - Warning: Failed to unlink relationship {rel_tuple}: {e}")
 
 def _cleanup_state_map(tree, existing_node_ids):
     for i in range(len(tree.fn_state_map) - 1, -1, -1):
@@ -798,7 +777,7 @@ def _topological_sort_creation_declarations(creation_declarations):
                 queue.append(neighbor_uuid)
 
     if len(sorted_uuids) != len(creation_declarations):
-        print("[FN_WARNING] Cyclic dependency detected or some datablocks could not be sorted. Returning unsorted keys.")
+        logger.log("[FN_WARNING] Cyclic dependency detected or some datablocks could not be sorted. Returning unsorted keys.")
         return list(creation_declarations.keys()) # Fallback to unsorted keys
 
     return sorted_uuids

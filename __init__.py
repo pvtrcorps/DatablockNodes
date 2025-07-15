@@ -12,7 +12,8 @@ bl_info = {
 }
 
 
-print("--- Loading Datablock Nodes Addon ---")
+from . import logger
+logger.log("--- Loading Datablock Nodes Addon ---")
 
 import bpy
 from nodeitems_utils import NodeCategory, NodeItem, register_node_categories, unregister_node_categories
@@ -144,7 +145,7 @@ classes = (
 )
 
 def register():
-    print("[FN_Register] Registering addon...")
+    logger.log("[FN_Register] Registering addon...")
     operators.register()
     sockets.register()
     properties.register() # New registration
@@ -157,7 +158,7 @@ def register():
     bpy.app.handlers.depsgraph_update_post.append(reconciler.datablock_nodes_depsgraph_handler)
 
 def unregister():
-    print("[FN_Register] Unregistering addon...")
+    logger.log("[FN_Register] Unregistering addon...")
     unregister_node_categories("DATABLOCK_NODES")
 
     for cls in reversed(classes):
@@ -169,9 +170,9 @@ def unregister():
     # Remove the handler
     try:
         bpy.app.handlers.depsgraph_update_post.remove(reconciler.datablock_nodes_depsgraph_handler)
-        print("[FN_Register] App handler removed.")
+        logger.log("[FN_Register] App handler removed.")
     except ValueError:
-        print("[FN_Register] App handler was not found, could not remove.")
+        logger.log("[FN_Register] App handler was not found, could not remove.")
 
 if __name__ == "__main__":
     register()

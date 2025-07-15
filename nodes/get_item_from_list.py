@@ -9,6 +9,7 @@ from ..sockets import (
     FNSocketCameraList, FNSocketImageList, FNSocketLightList, FNSocketMaterialList,
     FNSocketMeshList, FNSocketNodeTreeList, FNSocketTextList, FNSocketWorkSpaceList, FNSocketStringList
 )
+from .. import logger
 
 _socket_map_single = {
     'BOOLEAN': 'FNSocketBool',
@@ -110,7 +111,7 @@ class FN_get_item_from_list(FNBaseNode, bpy.types.Node):
             list_socket = self.inputs.new(list_socket_id, "List")
             list_socket.display_shape = 'SQUARE'
         else:
-            print(f"Warning: No list socket defined for type {self.list_type}")
+            logger.log(f"Warning: No list socket defined for type {self.list_type}")
             return # Cannot proceed without a list input
 
         # Add selection mode input socket
@@ -124,7 +125,7 @@ class FN_get_item_from_list(FNBaseNode, bpy.types.Node):
         if output_socket_id:
             self.outputs.new(output_socket_id, "Item")
         else:
-            print(f"Warning: No single item socket defined for type {self.list_type}")
+            logger.log(f"Warning: No single item socket defined for type {self.list_type}")
 
     
 
@@ -136,31 +137,31 @@ class FN_get_item_from_list(FNBaseNode, bpy.types.Node):
         input_list = kwargs.get(self.inputs['List'].identifier)
 
         if not input_list or not isinstance(input_list, list):
-            print(f"  - Warning: No valid list provided to {self.name}. Returning None.")
+            logger.log(f"  - Warning: No valid list provided to {self.name}. Returning None.")
             return None
 
         if self.selection_mode == 'INDEX':
             index = kwargs.get(self.inputs['Index'].identifier)
             if index is None or not isinstance(index, int):
-                print(f"  - Warning: Invalid index provided to {self.name}. Returning None.")
+                logger.log(f"  - Warning: Invalid index provided to {self.name}. Returning None.")
                 return None
             
             if 0 <= index < len(input_list):
                 return {self.outputs['Item'].identifier: input_list[index]}
             else:
-                print(f"  - Warning: Index {index} out of bounds for {self.name} (0 to {len(input_list) - 1}). Returning None.")
+                logger.log(f"  - Warning: Index {index} out of bounds for {self.name} (0 to {len(input_list) - 1}). Returning None.")
                 return {self.outputs['Item'].identifier: None}
 
         elif self.selection_mode == 'NAME':
             name_to_find = kwargs.get(self.inputs['Name'].identifier)
             if name_to_find is None or not isinstance(name_to_find, str):
-                print(f"  - Warning: Invalid name provided to {self.name}. Returning None.")
+                logger.log(f"  - Warning: Invalid name provided to {self.name}. Returning None.")
                 return {self.outputs['Item'].identifier: None}
 
             for item in input_list:
                 if hasattr(item, 'name') and item.name == name_to_find:
                     return {self.outputs['Item'].identifier: item}
-            print(f"  - Warning: Item with name '{name_to_find}' not found in the list. Returning None.")
+            logger.log(f"  - Warning: Item with name '{name_to_find}' not found in the list. Returning None.")
             return {self.outputs['Item'].identifier: None}
 
         return {self.outputs['Item'].identifier: None}

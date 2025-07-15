@@ -2,6 +2,7 @@
 import bpy
 import os
 from . import reconciler
+from . import logger
 
 class FN_OT_activate_socket(bpy.types.Operator):
     """Activates a socket, sets it as the final execution point, and triggers sync."""
@@ -92,13 +93,13 @@ _all_operators = (
 )
 
 def register():
-    print("Registering operators...")
+    logger.log("Registering operators...")
     for cls in _all_operators:
         bpy.utils.register_class(cls)
-        print(f"  Registered: {cls.bl_idname}")
+        logger.log(f"  Registered: {cls.bl_idname}")
 
 def unregister():
-    print("Unregistering operators...")
+    logger.log("Unregistering operators...")
     for cls in reversed(_all_operators):
         bpy.utils.unregister_class(cls)
-        print(f"  Unregistered: {cls.bl_idname}")
+        logger.log(f"  Unregistered: {cls.bl_idname}")
