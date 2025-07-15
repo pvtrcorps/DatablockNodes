@@ -21,13 +21,25 @@ from . import operators
 from . import sockets
 from . import properties
 from . import reconciler
-from .nodes import new_datablock, set_datablock_name, link_to_scene, create_list, new_value, link_to_collection, join_strings, split_string, value_to_string, switch, get_item_from_list, import_datablock, read_file, write_file, set_datablock_properties, set_datablock_cycles_properties, set_object_data, set_scene_world, set_object_material, set_object_parent, derive_datablock, get_datablock_content
+from .nodes import new_datablock, set_datablock_name, link_to_scene, create_list, new_value, link_to_collection, join_strings, split_string, value_to_string, switch, get_item_from_list, import_datablock, read_file, write_file, set_datablock_properties, set_object_data, set_scene_world, set_object_material, set_object_parent, derive_datablock, get_datablock_content
+from .nodes.set_datablock_properties import FN_OT_internal_add_remove_property, FN_OT_internal_reorder_property
 
 # --- State Map Item ---
 class FNStateMapItem(bpy.types.PropertyGroup):
     node_id: bpy.props.StringProperty()
     socket_identifier: bpy.props.StringProperty() # New: Identifier of the socket this item belongs to
     datablock_uuids: bpy.props.StringProperty()
+
+# --- Property Assignment Map Item ---
+class FNPropertyAssignmentItem(bpy.types.PropertyGroup):
+    target_uuid: bpy.props.StringProperty()
+    property_name: bpy.props.StringProperty()
+    value_type: bpy.props.EnumProperty(
+        items=[('UUID', 'UUID', ''), ('LITERAL', 'Literal', '')],
+        default='UUID'
+    )
+    value_uuid: bpy.props.StringProperty() # For UUID-based assignments
+    value_json: bpy.props.StringProperty() # For literal value assignments (JSON encoded)
 
 # --- Relationship Map Item ---
 class FNRelationshipItem(bpy.types.PropertyGroup):
@@ -46,12 +58,12 @@ class DatablockTree(bpy.types.NodeTree):
 
     # Property to store the state map
     fn_state_map: bpy.props.CollectionProperty(type=FNStateMapItem)
+    # Property to store the property assignments map
+    fn_property_assignments_map: bpy.props.CollectionProperty(type=FNPropertyAssignmentItem)
     # Property to store the relationships map
     fn_relationships_map: bpy.props.CollectionProperty(type=FNRelationshipItem)
-    # Property to store the execution cache
-    fn_execution_cache: bpy.props.CollectionProperty(type=properties.FNExecutionCacheEntry)
-    # Property to store the hash of the last evaluated state for performance optimization
-    fn_last_evaluated_hash: bpy.props.StringProperty(name="Last Evaluated Hash", default="")
+    # Property to store the overrides map
+    fn_override_map: bpy.props.CollectionProperty(type=properties.FNOverrideItem)
 
 # --- UI ---
 class DATABLOCK_PT_panel(bpy.types.Panel):
@@ -90,7 +102,6 @@ node_categories = [
         NodeItem("FN_read_file"),
         NodeItem("FN_write_file"),
         NodeItem("FN_set_datablock_properties"),
-        NodeItem("FN_set_datablock_cycles_properties"),
         NodeItem("FN_set_object_data"),
         NodeItem("FN_set_scene_world"),
         NodeItem("FN_set_object_material"),
@@ -102,6 +113,7 @@ node_categories = [
 
 classes = (
     FNStateMapItem,
+    FNPropertyAssignmentItem,
     FNRelationshipItem,
     DatablockTree,
     
@@ -123,22 +135,13 @@ classes = (
     read_file.FN_read_file,
     write_file.FN_write_file,
     set_datablock_properties.FN_set_datablock_properties,
-    set_datablock_cycles_properties.FN_set_datablock_cycles_properties,
     set_object_data.FN_set_object_data,
     set_scene_world.FN_set_scene_world,
     set_object_material.FN_set_object_material,
     set_object_parent.FN_set_object_parent,
+    FN_OT_internal_add_remove_property,
+    FN_OT_internal_reorder_property,
 )
-
-def _clear_all_datablock_tree_caches(dummy):
-    print("[FN_Register] Clearing old caches (deferred)...")
-    for tree in bpy.data.node_groups:
-        if hasattr(tree, 'bl_idname') and tree.bl_idname == 'DatablockTreeType':
-            if 'fn_execution_cache' in tree:
-                del tree['fn_execution_cache']
-                print(f"  - Cleared cache for tree '{tree.name}'")
-    # Remove this handler after it has run once
-    bpy.app.handlers.load_post.remove(_clear_all_datablock_tree_caches)
 
 def register():
     print("[FN_Register] Registering addon...")
@@ -149,11 +152,6 @@ def register():
         bpy.utils.register_class(cls)
     
     register_node_categories("DATABLOCK_NODES", node_categories)
-
-    # --- Cache Invalidation (Deferred) --- #
-    # Register a temporary handler to clear caches after file load
-    bpy.app.handlers.load_post.append(_clear_all_datablock_tree_caches)
-    print("[FN_Register] Deferred cache clearing handler appended.")
 
     # Register the main depsgraph update handler for continuous execution
     bpy.app.handlers.depsgraph_update_post.append(reconciler.datablock_nodes_depsgraph_handler)

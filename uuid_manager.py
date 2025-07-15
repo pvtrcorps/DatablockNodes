@@ -13,7 +13,7 @@ def get_uuid(datablock):
 def set_uuid(datablock, target_uuid=None, force_new=False):
     """Assign a new File Nodes UUID to a datablock.
     If target_uuid is provided, it will be used. Otherwise, a new one is generated
-    if the datablock doesn't have one already.
+    if the datablock's doesn't have one already.
     
     """
     if target_uuid:
@@ -59,3 +59,25 @@ def get_or_create_uuid(datablock):
     if uuid is None:
         uuid = set_uuid(datablock)
     return uuid
+
+def generate_uuid():
+    """Generates a new UUID string."""
+    return str(uuid.uuid4())
+
+def is_valid_uuid(uuid_string):
+    """Checks if a string is a valid UUID."""
+    try:
+        uuid.UUID(uuid_string)
+        return True
+    except ValueError:
+        return False
+
+def get_all_managed_datablocks():
+    """Returns a dictionary of all datablocks managed by the system, keyed by their UUID."""
+    managed_dbs = {}
+    for collection in (bpy.data.objects, bpy.data.scenes, bpy.data.materials, bpy.data.meshes, bpy.data.collections, bpy.data.cameras, bpy.data.lights, bpy.data.images, bpy.data.node_groups, bpy.data.texts, bpy.data.worlds, bpy.data.armatures, bpy.data.actions):
+        for db in collection:
+            uuid = db.get(FN_UUID_PROPERTY)
+            if uuid:
+                managed_dbs[uuid] = db
+    return managed_dbs

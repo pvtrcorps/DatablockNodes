@@ -4,157 +4,103 @@ Este documento describe la arquitectura y los principios fundamentales del addon
 
 ## 1. Objetivo Principal
 
-El addon Datablock Nodes permite la manipulación programática y nodal de los datablocks de Blender (objetos, escenas, mallas, colecciones, etc.). El diseño busca ser **idempotente** (misma entrada siempre produce la misma salida) y permitir **ramificaciones explícitas** en el flujo de datos, similar a los Geometry Nodes de Blender. El sistema está diseñado para gestionar datablocks de forma independiente de su linkado a la escena activa, permitiendo procesamiento "en segundo plano" y control granular sobre las relaciones.
+El addon Datablock Nodes permite la manipulación programática y nodal de los datablocks de Blender (objetos, escenas, mallas, colecciones, etc.). El diseño busca ser **idempotente** (misma entrada siempre produce la misma salida) y permitir **ramificaciones explícitas** en el flujo de datos, similar a los Geometry Nodes de Blender. A diferencia de versiones anteriores, el sistema ahora opera bajo una **arquitectura de carga bajo demanda**. Esto significa que solo los datablocks de la rama activa del árbol de nodos existen en Blender en un momento dado. Los datablocks de ramas inactivas son destruidos para liberar recursos y se recrean cuando su rama se vuelve a activar, **preservando cualquier modificación manual realizada por el usuario**.
 
 ## 2. Principios Fundamentales
 
-### 2.1. Idempotencia y Preservación de Datos
+### 2.1. Arquitectura 100% Declarativa
+
+El núcleo del addon es un paradigma estrictamente declarativo. Los nodos **nunca** modifican directamente el estado de Blender. En su lugar, **declaran** el estado final deseado, y un motor centralizado, el **Reconciliador**, se encarga de aplicar esos cambios de manera segura y eficiente.
+
+### 2.2. Idempotencia y Preservación de Datos
 
 *   **Idempotencia:** El sistema está diseñado para que, al ejecutar el árbol de nodos múltiples veces con las mismas entradas, el estado final de los datablocks en Blender sea siempre el mismo, sin crear duplicados (`.001`, `.002`, etc.).
-*   **Preservación de Datos:** Un principio clave es permitir que las modificaciones manuales del usuario sobre un datablock (ej. mover un objeto, editar una malla) persistan entre ejecuciones del árbol de nodos, siempre y cuando ese datablock siga siendo gestionado por el árbol. Esto se logra mediante:
+*   **Preservación de Datos:** Un principio clave es permitir que las modificaciones manuales del usuario sobre un datablock (ej. mover un objeto, editar una malla) persistan entre activaciones de ramas. Cuando un datablock de una rama inactiva es destruido, sus propiedades modificadas manualmente son serializadas y almacenadas. Al recrearse el datablock (cuando su rama se activa de nuevo), estas modificaciones son restauradas. Esto se logra mediante:
     *   **UUIDs Persistentes:** Cada datablock gestionado por el addon recibe un UUID único (`_fn_uuid`) que se almacena directamente en el datablock de Blender.
+    *   **Mapa de Overrides:** Una nueva estructura de datos persistente (`fn_override_map`) almacena las modificaciones manuales de los datablocks inactivos.
 
-### 2.2. Ramificaciones Explícitas (Copy-on-Write)
+### 2.3. Ramificaciones Explícitas (Copy-on-Write)
 
-El sistema no "adivina" cuándo debe copiar un datablock. La lógica es explícita y controlada por el `reconciler` y la mutabilidad de los sockets:
+El sistema no "adivina" cuándo debe copiar un datablock. La lógica es explícita y controlada por el `reconciler` y la mutabilidad de los sockets. Este mecanismo es crucial en la arquitectura de carga bajo demanda, ya que asegura que cada rama tenga su propia versión del datablock para modificar.
 
 *   **Modificación In-Place:** Si un datablock se pasa a un nodo modificador y la salida del nodo anterior no tiene múltiples conexiones (no hay ramificación), el nodo modificador opera directamente sobre el datablock original.
-*   **Copia-en-Escritura:** Si la salida de un nodo tiene múltiples conexiones (es un punto de ramificación) Y el socket de entrada del nodo siguiente es `is_mutable = True` (indicando que el nodo modificará el datablock), el `reconciler` crea una **copia** del datablock. A esta copia se le asigna un **nuevo y único UUID** para asegurar que ambas ramas del flujo de datos puedan coexistir y ser gestionadas independientemente.
+*   **Copia-en-Escritura:** Si la salida de un nodo tiene múltiples conexiones (es un punto de ramificación) Y el socket de entrada del nodo siguiente es `is_mutable = True` (indicando que el nodo modificará el datablock), el `reconciler` crea una **copia implícita** del datablock. A esta copia se le asigna un **nuevo y único UUID** para asegurar que ambas ramas del flujo de datos puedan coexistir y ser gestionadas independientemente. Para nodos que explícitamente crean nuevas instancias (como 'Derive Datablock'), su socket de entrada debe tener `is_mutable = False` para evitar copias redundantes y asegurar que el nodo gestione su propia lógica de creación.
 
-### 2.3. Gestión Granular de Relaciones
+### 2.4. Gestión de Relaciones y Propiedades
 
-El addon gestiona explícitamente las relaciones entre datablocks (ej. objetos linkados a colecciones, colecciones anidadas). Esto asegura que:
-*   Las relaciones creadas por el addon se rastrean y se mantienen solo mientras sean "requeridas" por el árbol de nodos activo.
-*   Las relaciones que ya no son necesarias se desvinculan automáticamente, manteniendo el archivo de Blender limpio y consistente con el estado del grafo.
-*   El linkado de objetos y colecciones a la escena activa es una acción explícita del nodo `Link to Scene`, no un efecto secundario de la activación de un socket.
+Existen dos formas de declarar relaciones, dependiendo de la naturaleza de la operación:
+
+*   **Asignación de Propiedades (Genérico):** Para la mayoría de las operaciones (asignar un material, un padre, un `world`), el nodo declara una **asignación de propiedad**. Esto le dice al reconciliador: "Asegúrate de que la propiedad `X` del datablock `A` apunte al datablock `B`". Este sistema es genérico y escalable.
+*   **Relaciones de Colección (Específico):** Para operaciones que involucran colecciones de Blender (`.link`/`.unlink`), como añadir un objeto a una colección, el nodo declara una **relación de colección**. Esto es necesario porque estas operaciones no son simples asignaciones de propiedades.
 
 ## 3. Componentes Clave
 
 ### 3.1. `reconciler.py`
 
-Es el motor central del addon.
-*   **`sync_active_socket(tree, active_socket)`:** Orquesta la ejecución del árbol de nodos, iniciando el proceso de evaluación y sincronización.
-*   **`_evaluate_node_tree(tree, active_socket)`:** Realiza una evaluación "pull-style" desde el socket activo, construyendo el estado requerido de datablocks y relaciones.
-*   **`_evaluate_node(tree, node, cache, evaluated_nodes_and_sockets)`:** Recursivamente evalúa un nodo y sus dependencias, utilizando un caché para evitar re-evaluaciones.
-*   **`_diff_and_sync(tree, required_state, current_state, required_relationships)`:** La función más crítica para la gestión de datos y relaciones.
-    *   Compara el estado `required_state` (datablocks y relaciones que deberían existir) con el `current_state` (lo que existe actualmente en Blender).
-    *   Gestiona la persistencia (`use_fake_user`), visibilidad (renombrando con `.` prefijo) y eliminación de datablocks.
-    *   **Gestiona relaciones:** Desvincula relaciones (ej. objeto de colección) que ya no están en `required_relationships`.
-*   **`_get_managed_datablocks_in_scene()`:** Identifica todos los datablocks en el archivo de Blender que están siendo gestionados por el addon (tienen un `_fn_uuid`).
+Es el motor de orquestación y el componente más crítico del addon. Su principio fundamental es que **el estado del archivo de Blender debe ser un reflejo del estado declarado por la rama activa del árbol de nodos**.
 
-### 3.2. `uuid_manager.py`
+*   **`datablock_nodes_depsgraph_handler(scene, depsgraph)`**: El punto de entrada principal. Se dispara con cada actualización del `depsgraph` de Blender. Contiene un mecanismo de "cerrojo" para evitar re-entradas y bucles infinitos.
+*   **`trigger_execution(tree)`**: Orquesta el proceso de evaluación y sincronización. Identifica la rama activa y delega la evaluación y la sincronización.
+*   **`_evaluate_active_branch(tree, active_socket, active_branch_nodes)`**: Esta función evalúa **solo** los nodos que pertenecen a la rama activa, construyendo un "plan activo" en memoria (UUIDs, estados, relaciones, asignaciones de propiedades y declaraciones de creación/carga de archivos) para esa rama. Ahora también devuelve `load_file_declarations`.
+*   **`_synchronize_blender_state(tree, active_uuids, active_states, active_relationships, active_assignments, creation_declarations)`**: El corazón del reconciliador en la nueva arquitectura. Su responsabilidad es asegurar que el estado de Blender coincida con el "plan activo".
+    1.  **Fase de Destrucción:** Identifica todos los datablocks gestionados por el addon que **no** están en el `active_uuids` del plan. Para cada uno de ellos:
+        *   Serializa sus propiedades modificadas manualmente usando `_serialize_overrides` y las guarda en el `fn_override_map`.
+        *   Elimina el datablock de Blender (`bpy.data.collection.remove()`).
+        *   Limpia sus entradas correspondientes de los mapas persistentes (`fn_state_map`, `fn_relationships_map`, `fn_property_assignments_map`).
+    2.  **Fase de Creación/Actualización:** Para cada datablock en el `active_uuids` del plan, y siguiendo un orden topológico para respetar las dependencias:
+        *   Si el datablock no existe en Blender (porque fue destruido o es nuevo), se crea (esto ocurre implícitamente a través de la ejecución de los nodos y las declaraciones `CREATE_DATABLOCK`, `DERIVE` o `COPY`).
+        *   Inmediatamente después de la creación, llama a `_apply_overrides` para restaurar cualquier modificación manual previamente guardada.
+        *   Aplica las propiedades y relaciones del plan activo de forma **defensiva** (solo si el valor en Blender difiere del plan), para evitar disparar el `depsgraph` innecesariamente.
+*   **`_topological_sort_creation_declarations(creation_declarations)`**: Nueva función que ordena las declaraciones de creación para asegurar que los datablocks de origen se creen antes que los datablocks que dependen de ellos, resolviendo problemas de dependencias en cascada.
+*   **`_serialize_overrides(datablock)`**: Nueva función que captura las propiedades modificadas manualmente de un datablock y las convierte a un string JSON. Maneja tipos complejos de Blender (`Vector`, `Matrix`, `bpy_prop_array`) convirtiéndolos a listas para la serialización.
+*   **`_apply_overrides(datablock, tree)`**: Nueva función que lee el JSON de overrides y aplica las propiedades guardadas a un datablock. Reconstruye los tipos complejos de Blender a partir de las listas JSON.
 
-Gestiona la asignación y búsqueda de UUIDs para los datablocks de Blender.
-*   **`FN_UUID_PROPERTY = "_fn_uuid"`:** La clave utilizada para almacenar el UUID en el diccionario de propiedades del datablock.
-*   **`get_uuid(datablock)`:** Recupera el UUID de un datablock.
-*   **`set_uuid(datablock, target_uuid=None, force_new=False)`:** Asigna un UUID. Si `force_new=True`, siempre generará un nuevo UUID, incluso si el datablock ya tiene uno. Esto es vital para las copias en ramificaciones.
-*   **`find_datablock_by_uuid(uuid_to_find)`:** Busca un datablock en las colecciones `bpy.data` (objetos, escenas, mallas, materiales, etc.) por su UUID.
+### 3.2. Mapas de Estado en `DatablockTree`
 
-### 3.3. `fn_state_map` (en `DatablockTree`)
+*   **`fn_state_map`**: Registro de los datablocks creados o importados por los nodos.
+*   **`fn_relationships_map`**: Registro de las relaciones de colección (`.link`/`.unlink`) declaradas.
+*   **`fn_property_assignments_map`**: Registro de las asignaciones de propiedades genéricas declaradas.
+*   **`fn_override_map`**: **Nuevo**. Almacena las propiedades modificadas manualmente de los datablocks que han sido destruidos (porque su rama se volvió inactiva), permitiendo su restauración al recrearse.
 
-Es una colección persistente (`bpy.props.CollectionProperty` de tipo `FNStateMapItem`) dentro del `NodeTree` que almacena los `node_id` y los `datablock_uuid` asociados. Actúa como un registro de los datablocks que el árbol de nodos está gestionando activamente. Es fundamental para la idempotencia y la recolección de basura.
+### 3.3. Nodos (ej. `nodes/new_datablock.py`, `nodes/set_object_parent.py`)
 
-### 3.4. `fn_relationships_map` (en `DatablockTree`)
+Los nodos operan bajo un un **principio estrictamente declarativo**. Su única responsabilidad es ejecutar su lógica interna y devolver un diccionario con sus resultados. **Nunca deben modificar el `NodeTree` (`tree`) ni el estado de Blender directamente.**
 
-Es una nueva colección persistente (`bpy.props.CollectionProperty` de tipo `FNRelationshipItem`) dentro del `NodeTree` que almacena las relaciones específicas entre datablocks creadas por los nodos del addon (ej. `source_uuid`, `target_uuid`, `relationship_type`). Es crucial para la gestión granular de relaciones y su desvinculación automática.
+*   **Nodos Creadores/Modificadores:** Devuelven un diccionario que contiene el **UUID** del datablock de salida y, si aplica, una clave `'states'` para declarar la existencia de un datablock. Para declarar la creación de un nuevo datablock (como en `New Datablock` o `Derive Datablock`), se utiliza la clave `'declarations'` con el tipo de declaración (`'create_datablock'`, `'derive_datablock'`, `'copy_datablock'`).
+*   **Nodos de Asignación de Propiedades (`set_object_parent`):** Devuelven una clave `'property_assignments'` con una lista de diccionarios que describen la asignación (`target_uuid`, `property_name`, `value_uuid` o `value_json`).
+*   **Nodos de Relación de Colección (`link_to_collection`):** Devuelven una clave `'relationships'` con una lista de tuplas que describen el vínculo.
+*   **Nodos Lectores de Propiedades (`get_datablock_content`):** Reciben UUIDs como entrada, utilizan `uuid_manager.find_datablock_by_uuid` para acceder a las propiedades del datablock en Blender, y devuelven **UUIDs** para cualquier datablock referenciado en sus salidas.
 
-### 3.5. Nodos (ej. `nodes/new_datablock.py`, `nodes/link_to_collection.py`)
+## 4. Flujo de Ejecución: Enfocado vs. Global
 
-*   **Nodos Creadores (`FN_new_datablock`):** En su método `execute`, consultan el `fn_state_map` para ver si ya existe un datablock asociado a su `fn_node_id`. Si existe, lo actualizan; si no, crean uno nuevo y registran su UUID en el `fn_state_map`.
-*   **Nodos Modificadores (`FN_set_datablock_name`):** Reciben el datablock (original o copia) preparado por el `reconciler` y realizan su operación. No necesitan implementar la lógica de ramificación directamente.
-*   **Nodos de Relación (`FN_link_to_collection`):** Además de realizar la operación de linkado en Blender, registran la relación creada en `tree.fn_relationships_map` para que el `reconciler` pueda rastrearla y desvincularla si deja de ser requerida.
+En la nueva arquitectura de carga bajo demanda, el sistema opera principalmente en un **Modo Enfocado**.
 
-## 4. Flujo de Ejecución (Detallado)
+*   **Modo Enfocado (Principal):** Si un usuario activa un socket de salida (mediante el botón de activación en la UI del socket), el reconciliador evalúa **únicamente** la cadena de nodos que conduce a ese socket. Todos los datablocks que no forman parte de esta rama activa son destruidos, y solo los de la rama activa son creados/actualizados. Esto permite una gestión eficiente de los recursos y una visualización clara del resultado de una rama específica.
+*   **Modo Global (Implícito/Transitorio):** El concepto de un "modo global" donde todos los datablocks existen simultáneamente ha sido eliminado. Si no hay ningún socket activo, el addon no realiza ninguna acción de sincronización, asumiendo que el usuario no ha declarado una rama activa para visualizar. La persistencia de los datablocks entre sesiones de Blender se gestiona a través de los overrides y la recreación bajo demanda.
 
-1.  **Inicio:** `sync_active_socket` se llama, generalmente por un `depsgraph_update_post` handler.
-2.  **Evaluación del Árbol (`_evaluate_node_tree`):**
-    *   Se realiza una evaluación recursiva "pull-style" desde el socket activo hacia atrás a través de las conexiones.
-    *   Cada nodo se ejecuta una vez, y sus resultados se almacenan en un caché de sesión.
-    *   Durante la ejecución de nodos que crean relaciones (ej. `FN_link_to_collection`), estas relaciones se registran en `tree.fn_relationships_map`.
-    *   Al finalizar, se obtiene el `required_state` (UUIDs de datablocks activos) y `required_relationships` (conjunto de tuplas `(source_uuid, target_uuid, relationship_type)` de las relaciones activas).
-3.  **Recolección de Estado Actual (`_get_managed_datablocks_in_scene`):** Se identifican todos los datablocks actualmente gestionados por el addon en el archivo de Blender.
-4.  **Sincronización y Recolección de Basura (`_diff_and_sync`):**
-    *   **Datablocks:** Se comparan `required_state` con el estado actual. Los datablocks no requeridos pero con creador existente se ocultan (prefijo `.`) y se les asigna `use_fake_user = True`. Los datablocks huérfanos (sin nodo creador existente) se eliminan.
-    *   **Relaciones:** Se comparan `required_relationships` con las relaciones almacenadas en `tree.fn_relationships_map`. Las relaciones que ya no son requeridas por el árbol activo se desvinculan de Blender (ej. `collection.objects.unlink(obj)`). Las entradas obsoletas en `tree.fn_relationships_map` y `tree.fn_state_map` se limpian.
-5.  **Activación de Ruta:** Se marcan los sockets en la ruta activa con `is_active = True` para visualización.
-6.  **Establecer Datablock Activo (si aplica):** Si el socket activo final es de tipo `Scene`, se establece como la escena activa de Blender.
+## 5. Cómo Implementar un Nuevo Nodo
 
-## 5. Guías de Desarrollo y Estilo
-
-*   **Convenciones:** Adherirse estrictamente a las convenciones de código existentes (formato, nombres, estructura).
-*   **Blender API:** Utilizar la API de Blender de forma idiomática.
-*   **Comentarios:** Añadir comentarios solo cuando sea necesario para explicar el *porqué* de una decisión compleja, no el *qué* hace el código.
-*   **Pruebas:** Siempre que sea posible, crear pruebas unitarias o de integración para verificar el comportamiento de los nodos y el sistema.
-*   **Consistencia de Relaciones:** Al definir nuevos tipos de relaciones, asegúrese de que sean claras y consistentes con los tipos existentes (ej. `COLLECTION_OBJECT_LINK`, `COLLECTION_CHILD_LINK`).
-*   **Forma de los Sockets:** Utilice `socket.display_shape = 'SQUARE'` para los sockets que representan listas de datablocks (ej. `FNSocketObjectList`, `FNSocketCollectionList`). Esto proporciona una indicación visual clara de que el socket maneja múltiples elementos.
-
-## 6. Cómo Implementar un Nuevo Nodo
-
-Para implementar un nuevo nodo, siga estos pasos:
-
-1.  **Crear un nuevo archivo Python** en la carpeta `nodes/` (ej. `my_new_node.py`).
-2.  **Importar `bpy` y `FNBaseNode`:**
-    ```python
-    import bpy
-    from ..nodes.base import FNBaseNode
-    from .. import uuid_manager # Si necesita gestionar UUIDs
-    ```
-3.  **Definir la clase del nodo:** La clase debe heredar de `FNBaseNode` y `bpy.types.Node`.
-    ```python
-    class FN_my_new_node(FNBaseNode, bpy.types.Node):
-        bl_idname = "FN_my_new_node"
-        bl_label = "My New Node"
-        # bl_icon = 'SOME_ICON' (opcional)
-    ```
-4.  **Método `init(self, context)`:** Define los sockets de entrada y salida del nodo.
-    *   Use `self.inputs.new('FNSocketType', "Label")` y `self.outputs.new('FNSocketType', "Label")`.
-    *   Configure `is_mutable = True` para sockets de entrada que el nodo modificará.
-    ```python
-    def init(self, context):
-        FNBaseNode.init(self, context)
-        self.inputs.new('FNSocketString', "Input String")
-        self.outputs.new('FNSocketString', "Output String")
-    ```
-5.  **Método `update_hash(self, hasher)`:** Añade las propiedades del nodo que afectan su resultado al `hasher` para el sistema de caché.
-    ```python
-    def update_hash(self, hasher):
-        # Ejemplo: si el nodo tiene una propiedad 'my_property'
-        # hasher.update(str(self.my_property).encode())
-        pass # Si no hay propiedades que afecten el resultado
-    ```
-6.  **Método `execute(self, **kwargs)`:** Contiene la lógica principal del nodo.
-    *   Los valores de los sockets de entrada se pasan en `kwargs` (usando `socket.identifier` como clave).
-    *   El objeto `tree` (el `NodeTree` principal) también se pasa en `kwargs['tree']`.
-    *   **Gestión de UUIDs:** Si el nodo crea o modifica datablocks, use `uuid_manager.get_uuid()` y `uuid_manager.set_uuid()` para asegurar la idempotencia.
-    *   **Registro de Relaciones:** Si el nodo crea relaciones entre datablocks (ej. `FN_link_to_collection`), registre estas relaciones en `tree.fn_relationships_map` usando `FNRelationshipItem`.
-    *   Debe devolver un diccionario con los resultados de los sockets de salida.
-    ```python
-    def execute(self, **kwargs):
-        input_string = kwargs.get(self.inputs['Input String'].identifier)
-        # ... lógica del nodo ...
-        output_string = input_string.upper() # Ejemplo
-        return {self.outputs['Output String'].identifier: output_string}
-    ```
-7.  **Registrar el nodo:** En `__init__.py`, importe el nuevo archivo y añada la clase del nodo a la tupla `classes` y a `node_categories`.
-
-## 7. Directrices de UI/UX (ToDo/NotToDo)
-
-### ToDo (Lo que queremos lograr)
-
-*   **Claridad Visual:** Los nodos deben ser visualmente claros y su propósito inmediatamente obvio.
-*   **Minimalismo:** Evitar elementos de UI innecesarios en los nodos. La complejidad debe residir en el grafo, no en la interfaz de cada nodo.
-*   **Consistencia:** Mantener un estilo visual y de interacción consistente en todos los nodos.
-*   **Feedback Visual:** Proporcionar feedback visual claro sobre el estado de los nodos (ej. sockets activos, errores).
-*   **Interactividad Intuitiva:** La manipulación de nodos y conexiones debe ser fluida y predecible.
-
-### NotToDo (Lo que queremos evitar)
-
-*   **Duplicación de Funcionalidad:** No replicar funcionalidades existentes de Blender si no aportan un valor nodal significativo.
-*   **Interfaces Recargadas:** Evitar paneles de propiedades complejos dentro de los nodos que puedan ser mejor manejados por el sistema de propiedades de Blender o por nodos dedicados.
-*   **Comportamiento Inesperado:** El sistema debe ser predecible. Las acciones del usuario o los cambios en el grafo no deben llevar a estados ambiguos o difíciles de depurar.
-*   **Linkado Implícito:** **NO** linkar datablocks a la escena activa o a otras colecciones de forma automática o implícita. Esto debe ser siempre una acción explícita del usuario a través de nodos dedicados (ej. `Link to Scene`, `Link to Collection`).
-*   **Dependencias Externas Innecesarias:** Minimizar las dependencias de librerías externas para mantener el addon ligero y compatible.
-
-## 8. Depuración
-
-Los `print` statements con prefijos como `[FN_new_object]`, `[UUID_MANAGER]`, `[RECONCILER]`, etc., son herramientas de depuración activas. Permiten seguir el flujo de ejecución, la gestión de UUIDs, las decisiones de ramificación y la reconciliación de relaciones en tiempo real. Son invaluables para entender y solucionar problemas en este sistema complejo.
+1.  **Crear un nuevo archivo Python** en la carpeta `nodes/`.
+2.  **Definir la clase del nodo** heredando de `FNBaseNode` y `bpy.types.Node`.
+3.  **Método `init(self, context)`:** Define los sockets de entrada y salida.
+4.  **Método `execute(self, **kwargs)`:** Contiene la lógica principal del nodo. Este método es **estrictamente declarativo**.
+    *   **NUNCA** modifique `kwargs.get('tree')` ni llame a `bpy.ops` o funciones que modifiquen el estado de Blender.
+    *   **Si el nodo asigna una propiedad:** Devuelva una clave `'property_assignments'`.
+        ```python
+        return {
+            self.outputs[0].identifier: my_object,
+            'property_assignments': [{
+                'target_uuid': uuid_of_my_object,
+                'property_name': 'parent',
+                'value_uuid': uuid_of_parent_object
+            }]
+        }
+        ```
+    *   **Si el nodo gestiona una relación de colección:** Devuelva una clave `'relationships'`.
+        ```python
+        return {
+            self.outputs[0].identifier: output_collection,
+            'relationships': [(obj_uuid, col_uuid, 'COLLECTION_OBJECT_LINK')]
+        }
+        ```
+5.  **Registrar el nodo** en `__init__.py`.

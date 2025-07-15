@@ -11,6 +11,10 @@ _data_socket_map = {
     'CAMERA': 'FNSocketCamera',
 }
 
+def _update_node(self, context):
+    self.update_sockets(context)
+    self._trigger_update(context)
+
 class FN_set_object_data(FNBaseNode, bpy.types.Node):
     bl_idname = "FN_set_object_data"
     bl_label = "Set Object Data"
@@ -25,7 +29,7 @@ class FN_set_object_data(FNBaseNode, bpy.types.Node):
             ('CAMERA', 'Camera', 'Assign Camera data'),
         ],
         default='NONE',
-        update=lambda self, context: (self.update_sockets(context), self._trigger_update(context))
+        update=_update_node
     )
 
     def init(self, context):
@@ -48,58 +52,21 @@ class FN_set_object_data(FNBaseNode, bpy.types.Node):
     def draw_buttons(self, context, layout):
         layout.prop(self, "data_type", text="Data Type")
 
-    def update_hash(self, hasher):
-        super().update_hash(hasher)
-        hasher.update(self.data_type.encode())
-
-        # Hash the dynamically added Data input
-        if self.data_type != 'NONE':
-            data_input = self.inputs.get('Data')
-            if data_input and data_input.is_linked:
-                pass
-            elif data_input and hasattr(data_input, 'default_value'):
-                hasher.update(str(data_input.default_value).encode())
+    
 
     def execute(self, **kwargs):
-        obj = kwargs.get(self.inputs['Object'].identifier)
-        tree = kwargs.get('tree')
+        obj_uuid = kwargs.get(self.inputs['Object'].identifier)
+        new_data_uuid = kwargs.get(self.inputs['Data'].identifier) if self.data_type != 'NONE' else None
+        assignments = []
 
-        if not obj or not isinstance(obj, bpy.types.Object):
-            print(f"  - Warning: No valid object provided to {self.name}. Skipping.")
-            return None
+        if obj_uuid:
+            assignments.append({
+                'target_uuid': obj_uuid,
+                'property_name': 'data',
+                'value_uuid': new_data_uuid if new_data_uuid else ''
+            })
 
-        new_data = None
-        relationship_type = None
-
-        if self.data_type != 'NONE':
-            data_input_socket = self.inputs.get('Data')
-            if data_input_socket:
-                new_data = kwargs.get(data_input_socket.identifier)
-                relationship_type = f"OBJECT_DATA_ASSIGN_{self.data_type}"
-        
-        if new_data and isinstance(new_data, bpy.types.ID):
-            obj.data = new_data
-            print(f"  - Set data of object '{obj.name}' to '{new_data.name}' ({type(new_data).__name__})")
-            
-            # Register relationship
-            new_rel_item = tree.fn_relationships_map.add()
-            new_rel_item.node_id = self.fn_node_id
-            new_rel_item.source_uuid = uuid_manager.get_uuid(obj)
-            new_rel_item.target_uuid = uuid_manager.get_uuid(new_data)
-            new_rel_item.relationship_type = relationship_type
-        else:
-            # If no data is provided or data_type is NONE, set object.data to None and remove any existing relationship
-            if obj.data is not None:
-                print(f"  - Clearing data of object '{obj.name}'")
-                obj.data = None
-            
-            # Remove any existing OBJECT_DATA_ASSIGN relationships for this object
-            relationships_to_remove_indices = []
-            for i, rel_item in enumerate(tree.fn_relationships_map):
-                if rel_item.node_id == self.fn_node_id and rel_item.source_uuid == uuid_manager.get_uuid(obj) and rel_item.relationship_type.startswith("OBJECT_DATA_ASSIGN"):
-                    relationships_to_remove_indices.append(i)
-            
-            for i in sorted(relationships_to_remove_indices, reverse=True):
-                tree.fn_relationships_map.remove(i)
-
-        return {self.outputs[0].identifier: obj}
+        return {
+            self.outputs[0].identifier: obj_uuid,
+            'property_assignments': assignments
+        }

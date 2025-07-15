@@ -1,5 +1,5 @@
-
 import bpy
+import json
 from ..nodes.base import FNBaseNode
 from .. import uuid_manager
 from ..sockets import (
@@ -23,6 +23,10 @@ _datablock_socket_map = {
     'WORLD': 'FNSocketWorld',
 }
 
+def _update_node(self, context):
+    self.update_sockets(context)
+    self._trigger_update(context)
+
 class FN_set_datablock_name(FNBaseNode, bpy.types.Node):
     bl_idname = "FN_set_datablock_name"
     bl_label = "Set Datablock Name"
@@ -44,7 +48,7 @@ class FN_set_datablock_name(FNBaseNode, bpy.types.Node):
             ('WORLD', 'World', ''),
         ],
         default='SCENE',
-        update=lambda self, context: (self.update_sockets(context), self._trigger_update(context))
+        update=_update_node
     )
 
     def init(self, context):
@@ -68,25 +72,27 @@ class FN_set_datablock_name(FNBaseNode, bpy.types.Node):
         # Add datablock output socket
         self.outputs.new(_datablock_socket_map[self.datablock_type], self.datablock_type.capitalize())
 
-    def update_hash(self, hasher):
-        super().update_hash(hasher)
-        hasher.update(self.datablock_type.encode())
+    
 
     def draw_buttons(self, context, layout):
         layout.prop(self, "datablock_type", text="Type")
 
     def execute(self, **kwargs):
         input_socket_name = self.datablock_type.capitalize()
-        input_datablock = kwargs.get(self.inputs[input_socket_name].identifier)
+        input_datablock_uuid = kwargs.get(self.inputs[input_socket_name].identifier)
         new_name = kwargs.get(self.inputs['New Name'].identifier)
+        assignments = []
 
-        if not input_datablock:
-            print(f"  - Warning: No input datablock provided to {self.name}. Skipping.")
-            return None
+        if input_datablock_uuid and new_name is not None:
+            assignments.append({
+                'target_uuid': input_datablock_uuid,
+                'property_name': 'name',
+                'value_type': 'LITERAL',
+                'value_uuid': '',
+                'value_json': json.dumps(new_name)
+            })
 
-        if new_name is None:
-            print(f"  - Warning: No new name provided to {self.name}. Skipping.")
-            return input_datablock # Return datablock unmodified
-
-        input_datablock.name = new_name
-        return {self.outputs[0].identifier: input_datablock}
+        return {
+            self.outputs[0].identifier: input_datablock_uuid,
+            'property_assignments': assignments
+        }

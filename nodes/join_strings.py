@@ -2,6 +2,10 @@ import bpy
 from ..nodes.base import FNBaseNode
 from ..sockets import FNSocketString
 
+def _update_node(self, context):
+    self.update_sockets(context)
+    self._trigger_update(context)
+
 class FN_join_strings(FNBaseNode, bpy.types.Node):
     bl_idname = "FN_join_strings"
     bl_label = "Join Strings"
@@ -10,7 +14,7 @@ class FN_join_strings(FNBaseNode, bpy.types.Node):
         name="Strings",
         default=2,
         min=0,
-        update=lambda self, context: (self.update_sockets(context), self._trigger_update(context))
+        update=_update_node
     )
 
     def init(self, context):
@@ -35,9 +39,7 @@ class FN_join_strings(FNBaseNode, bpy.types.Node):
         # Add output string socket
         self.outputs.new('FNSocketString', "Output")
 
-    def update_hash(self, hasher):
-        super().update_hash(hasher)
-        hasher.update(str(self.string_count).encode())
+    
 
     def draw_buttons(self, context, layout):
         layout.prop(self, "string_count", text="Strings")

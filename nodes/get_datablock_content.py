@@ -1,6 +1,7 @@
 
 import bpy
 from ..nodes.base import FNBaseNode
+from .. import uuid_manager
 from ..sockets import (
     FNSocketObject, FNSocketCollection, FNSocketScene, FNSocketWorld, FNSocketCamera,
     FNSocketMesh, FNSocketLight, FNSocketMaterial, FNSocketObjectList, FNSocketCollectionList,
@@ -83,38 +84,53 @@ class FN_get_datablock_content(FNBaseNode, bpy.types.Node):
     def draw_buttons(self, context, layout):
         layout.prop(self, "datablock_type", text="Type")
 
-    def update_hash(self, hasher):
-        # The node's behavior only depends on its input, so no internal properties to hash.
-        pass
+    
 
     def execute(self, **kwargs):
-        source_datablock = kwargs.get(self.inputs['Source'].identifier)
+        source_uuid = kwargs.get(self.inputs['Source'].identifier)
+
+        if not source_uuid:
+            return {}
+
+        source_datablock = uuid_manager.find_datablock_by_uuid(source_uuid)
 
         if not source_datablock:
+            print(f"[FN_get_datablock_content] Warning: Source datablock with UUID {source_uuid} not found.")
             return {}
 
         results = {}
         outputs_for_type = _output_map.get(self.datablock_type, {})
         
         if self.datablock_type == 'SCENE':
-            results[self.outputs['Master Collection'].identifier] = source_datablock.collection
-            results[self.outputs['World'].identifier] = source_datablock.world
-            results[self.outputs['Active Camera'].identifier] = source_datablock.camera
+            if source_datablock.collection:
+                results[self.outputs['Master Collection'].identifier] = uuid_manager.get_or_create_uuid(source_datablock.collection)
+            if source_datablock.world:
+                results[self.outputs['World'].identifier] = uuid_manager.get_or_create_uuid(source_datablock.world)
+            if source_datablock.camera:
+                results[self.outputs['Active Camera'].identifier] = uuid_manager.get_or_create_uuid(source_datablock.camera)
         
         elif self.datablock_type == 'COLLECTION':
-            results[self.outputs['Objects'].identifier] = list(source_datablock.objects)
-            results[self.outputs['Child Collections'].identifier] = list(source_datablock.children)
+            results[self.outputs['Objects'].identifier] = [uuid_manager.get_or_create_uuid(obj) for obj in source_datablock.objects if obj]
+            results[self.outputs['Child Collections'].identifier] = [uuid_manager.get_or_create_uuid(col) for col in source_datablock.children if col]
 
         elif self.datablock_type == 'OBJECT':
             # Note: Object Data can be of many types, we simplify to Mesh for now.
             # A more robust implementation would check `source_datablock.type`.
-            if source_datablock.type == 'MESH':
-                 results[self.outputs['Object Data'].identifier] = source_datablock.data
+            if source_datablock.type == 'MESH' and source_datablock.data:
+                 results[self.outputs['Object Data'].identifier] = uuid_manager.get_or_create_uuid(source_datablock.data)
             else:
                  results[self.outputs['Object Data'].identifier] = None
             
-            results[self.outputs['Materials'].identifier] = list(source_datablock.data.materials) if source_datablock.data else []
-            results[self.outputs['Parent'].identifier] = source_datablock.parent
-            results[self.outputs['Children'].identifier] = list(source_datablock.children)
+            if source_datablock.data and hasattr(source_datablock.data, 'materials'):
+                results[self.outputs['Materials'].identifier] = [uuid_manager.get_or_create_uuid(mat) for mat in source_datablock.data.materials if mat]
+            else:
+                results[self.outputs['Materials'].identifier] = []
+
+            if source_datablock.parent:
+                results[self.outputs['Parent'].identifier] = uuid_manager.get_or_create_uuid(source_datablock.parent)
+            else:
+                results[self.outputs['Parent'].identifier] = None
+
+            results[self.outputs['Children'].identifier] = [uuid_manager.get_or_create_uuid(child) for child in source_datablock.children if child]
 
         return results

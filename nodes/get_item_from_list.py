@@ -52,6 +52,9 @@ _socket_map_list = {
     'WORKSPACE': 'FNSocketWorkSpaceList',
 }
 
+def _update_node(self, context):
+    self.update_sockets(context)
+
 class FN_get_item_from_list(FNBaseNode, bpy.types.Node):
     bl_idname = "FN_get_item_from_list"
     bl_label = "Get Item From List"
@@ -74,7 +77,7 @@ class FN_get_item_from_list(FNBaseNode, bpy.types.Node):
             ('WORKSPACE', 'WorkSpace', ''),
         ],
         default='OBJECT',
-        update=lambda self, context: self.update_sockets(context)
+        update=_update_node
     )
 
     selection_mode: bpy.props.EnumProperty(
@@ -84,7 +87,7 @@ class FN_get_item_from_list(FNBaseNode, bpy.types.Node):
             ('NAME', 'By Name', 'Select item by its name (only for datablocks)'),
         ],
         default='INDEX',
-        update=lambda self, context: self.update_sockets(context)
+        update=_update_node
     )
 
     def init(self, context):
@@ -123,10 +126,7 @@ class FN_get_item_from_list(FNBaseNode, bpy.types.Node):
         else:
             print(f"Warning: No single item socket defined for type {self.list_type}")
 
-    def update_hash(self, hasher):
-        super().update_hash(hasher)
-        hasher.update(self.list_type.encode())
-        hasher.update(self.selection_mode.encode())
+    
 
     def draw_buttons(self, context, layout):
         layout.prop(self, "list_type", text="List Type")

@@ -1,759 +1,863 @@
 import bpy
 import hashlib
 import json
+import mathutils
+from bpy.types import bpy_prop_array
 from bpy.app.handlers import persistent
 from . import uuid_manager
+from .properties import _datablock_creation_map
 
-# --- Continuous Execution Handler ---
-
-# We need a single, identifiable timer function for the debounce to work correctly.
 _timer_func = None
+_is_executing = False
 
-# A tuple of node idnames that should not be cached
-ACTION_NODES = (
-    'FN_link_to_scene',
-    'FN_write_file',
-    'FN_new_datablock',
-    # 'FN_link_to_collection', # Temporarily commented out for testing
-)
+def _set_nested_property(base, path, value):
+    try:
+        parts = path.split('.')
+        obj = base
+        for part in parts[:-1]:
+            obj = getattr(obj, part)
+        setattr(obj, parts[-1], value)
+        return True
+    except (AttributeError, TypeError) as e:
+        print(f"[FN_ERROR] Could not set nested property '{path}' on {base.name}: {e}")
+        return False
 
+def _get_nested_property(base, path):
+    try:
+        parts = path.split('.')
+        obj = base
+        for part in parts:
+            obj = getattr(obj, part)
+        return obj
+    except (AttributeError, TypeError):
+        return None
 
 @persistent
 def datablock_nodes_depsgraph_handler(scene, depsgraph):
-    """
-    This function is registered with bpy.app.handlers.depsgraph_update_post.
-    It gets called anytime the dependency graph is updated.
-    """
-    global _timer_func
+    print("\n--- [FN] Depsgraph Handler Triggered ---")
+    global _timer_func, _is_executing
 
-    # It's more robust to iterate through all node groups than rely on context
-    active_tree = None
-    for tree in bpy.data.node_groups:
-        if hasattr(tree, 'bl_idname') and tree.bl_idname == 'DatablockTreeType':
-            # Check if this tree has a final active socket.
-            if any(sock.is_final_active for node in tree.nodes for sock in node.outputs):
-                active_tree = tree
-                break
-    
+
+    if _is_executing:
+        print("[FN_DEBUG] Execution in progress. Re-entry blocked.")
+        return
+
+    active_tree = next((tree for tree in bpy.data.node_groups if hasattr(tree, 'bl_idname') and tree.bl_idname == 'DatablockTreeType' and any(sock.is_final_active for node in tree.nodes for sock in node.outputs)), None)
+
     if not active_tree:
-        print("[FN_Handler] No active DatablockTreeType found. Skipping handler.")
         return
 
-    # Calculate current active state hash
-    current_active_socket = None
-    for node in active_tree.nodes:
-        for sock in node.outputs:
-            if sock.is_final_active:
-                current_active_socket = sock
-                break
-        if current_active_socket:
-            break
-
-    if not current_active_socket:
-        print("[FN_Handler] No final active socket found in active tree. Skipping handler.")
-        return
-
-    current_active_state_hash = _get_node_and_input_hash(active_tree, current_active_socket.node)
-
-    if current_active_state_hash == active_tree.fn_last_evaluated_hash:
-        print(f"[FN_Handler] Active state hash unchanged ({current_active_state_hash[:7]}...). Skipping execution.")
-        return
-        return
-
-    print(f"[FN_Handler] depsgraph_update_post triggered for '{active_tree.name}'.")
-
-    # --- Debounce mechanism --- #
     def execution_wrapper():
-        """A wrapper to pass the tree to the actual execution trigger."""
-        global _timer_func
-        print(f"[FN_Handler] Timer expired for '{active_tree.name}', triggering execution.")
-        trigger_execution(active_tree)
-        _timer_func = None # Clear the global timer function reference
-        return None # Returning None stops the timer from repeating
+        global _timer_func, _is_executing
+        print("[FN_DEBUG] LOCKING execution engine.")
+        _is_executing = True
+        try:
+            trigger_execution(active_tree)
+            print("[FN_DEBUG] Execution finished successfully.")
+        except Exception as e:
+            print(f"[FN_ERROR] An exception occurred during execution: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            print("[FN_DEBUG] UNLOCKING execution engine.")
+            _is_executing = False
+            _timer_func = None
+        return None
 
-    # If a timer is already registered, cancel it before setting a new one.
     if _timer_func and bpy.app.timers.is_registered(_timer_func):
         bpy.app.timers.unregister(_timer_func)
     
-    # Store the new wrapper and register it.
     _timer_func = execution_wrapper
-    bpy.app.timers.register(_timer_func, first_interval=0.05)
-
-
+    bpy.app.timers.register(_timer_func, first_interval=0.01)
 
 def trigger_execution(tree: bpy.types.NodeTree):
+    print(f"--- Triggering execution for tree '{tree.name}' ---")
     """
-    Finds the final active output socket in the tree and starts the sync process.
-    This is called by the timer to start the evaluation.
+    Triggers an evaluation of the active branch, builds an active plan, and
+    synchronizes the state in Blender by destroying inactive datablocks and
+    creating/updating active ones.
     """
-    print("--- [Reconciler] Continuous execution triggered ---")
-    final_socket = None
-    for node in tree.nodes:
-        for socket in node.outputs:
-            if socket.is_final_active:
-                final_socket = socket
-                break
-        if final_socket:
-            break
+    # 1. Identify the active socket. If none, do nothing.
+    active_socket = next((sock for node in tree.nodes for sock in node.outputs if sock.is_final_active), None)
+    if not active_socket:
+        # Optional: Could add logic here to clean up all managed datablocks if no socket is active.
+        # For now, we do nothing.
+        return
+
+    # 2. Get the nodes involved in the active branch.
+    active_branch_nodes = _get_active_branch_node_ids(active_socket)
+
+    # 3. Evaluate the active branch to get the execution plan.
+    # This new function will only evaluate the necessary nodes.
+    session_cache, active_uuids, active_states, active_relationships, active_assignments, creation_declarations, load_file_declarations = _evaluate_active_branch(tree, active_socket, active_branch_nodes)
+
+    # Process LOAD_FILE declarations before synchronization
+    for decl in load_file_declarations:
+        file_path = decl['file_path']
+        link_flag = decl['link_flag']
+        datablock_types = decl['datablock_types']
+        node_id = decl['node_id']
+
+        if not os.path.exists(file_path):
+            print(f"[FN_read_file] Error: File not found at '{file_path}'")
+            continue
+
+        loaded_uuids = []
+        with bpy.data.libraries.load(file_path, link=link_flag) as (data_from, data_to):
+            for db_type_name in datablock_types:
+                if hasattr(data_from, db_type_name):
+                    setattr(data_to, db_type_name, getattr(data_from, db_type_name))
+                    for db in getattr(data_to, db_type_name):
+                        uuid_manager.set_uuid(db) # Assign a new UUID if it doesn't have one
+                        loaded_uuids.append(uuid_manager.get_uuid(db))
+        
+        # Add loaded UUIDs to active_uuids
+        active_uuids.update(loaded_uuids)
+
+        # Update the state for the node that declared this load operation
+        map_item = next((item for item in tree.fn_state_map if item.node_id == node_id), None)
+        if not map_item:
+            map_item = tree.fn_state_map.add()
+            map_item.node_id = node_id
+        map_item.datablock_uuids = ",".join(loaded_uuids)
+        print(f"[FN_DEBUG] _synchronize_blender_state: Loaded datablocks from {file_path}. UUIDs: {loaded_uuids}")
+
+    # Force a Blender update to ensure newly created datablocks are registered
+    bpy.context.view_layer.update()
+
+    # 4. Synchronize Blender's state with the active plan.
+    # This function will be heavily modified to handle destruction and creation.
+    _synchronize_blender_state(tree, active_uuids, active_states, active_relationships, active_assignments, creation_declarations)
+
+    # 5. Update UI to highlight the active path.
+    update_ui_for_active_socket(tree, active_socket, session_cache)
+
+
+def _serialize_overrides(datablock) -> str:
+    """
+    Serializes the user-modified properties of a datablock to a JSON string.
+    Compares current values against Blender's default values using a JSON-safe conversion.
+    """
+    if not datablock or not hasattr(datablock, 'bl_rna'):
+        return "{}"
+
+    def _to_json_safe(value):
+        """Recursively converts complex Blender types to JSON-serializable formats."""
+        # 1. Basic Python types
+        if isinstance(value, (int, float, str, bool, type(None))):
+            return value
+
+        # 2. Mathutils types (Vector, Matrix, Color, Euler, Quaternion)
+        # Convert to list, then recursively process elements
+        if isinstance(value, (mathutils.Vector, mathutils.Color, mathutils.Euler, mathutils.Quaternion)):
+            return list(value) # These are already flat lists of numbers
+        if isinstance(value, mathutils.Matrix):
+            # A Matrix converts to a list of Vectors. We need to convert each Vector.
+            return [_to_json_safe(row) for row in value] # Recursively call for each row (Vector)
+
+        # 3. bpy_prop_array and other iterable bpy_structs
+        # Convert to list, then recursively process elements
+        if isinstance(value, bpy_prop_array) or (isinstance(value, bpy.types.bpy_struct) and hasattr(value, '__iter__')):
+            return [_to_json_safe(item) for item in value] # Recursively call for each item
+
+        # 4. Blender ID types (datablocks)
+        if isinstance(value, bpy.types.ID):
+            return uuid_manager.get_uuid(value)
+
+        # 5. Generic Python iterables (lists, tuples, sets, frozensets)
+        # Recursively convert their elements
+        if isinstance(value, (list, tuple, set, frozenset)):
+            return [_to_json_safe(item) for item in value]
+        
+        # 6. Fallback: If we reach here, it's an unhandled type.
+        # This should ideally not happen for data we intend to serialize.
+        print(f"[FN_WARNING] _to_json_safe: Unhandled type for JSON serialization: {type(value).__name__} ({value}). Omitting property.")
+        return None # Omit the property from serialization
+
+    overrides = {}
+    rna_properties = datablock.bl_rna.properties
+
+    for prop in rna_properties:
+        if prop.is_readonly or prop.is_hidden or prop.type == 'FUNCTION':
+            continue
+        
+        # Skip internal collection properties
+        if prop.type == 'COLLECTION' and hasattr(prop, 'srna') and prop.srna and prop.srna.bl_idname == 'bpy_prop_collection_idprop_group':
+            continue
+
+        # Skip matrix properties as they are derived and not directly user-editable for overrides
+        if prop.identifier in ['matrix_world', 'matrix_local', 'matrix_basis', 'matrix_parent_inverse']:
+            continue
+
+        try:
+            current_value = _get_nested_property(datablock, prop.identifier)
+            if current_value is None: continue
+
+            # Get default value, handling arrays correctly
+            default_value = prop.default_array if prop.is_array else prop.default
+
+            # Convert both to a comparable, JSON-safe format
+            safe_current = _to_json_safe(current_value)
+            if safe_current is None:
+                continue
+            safe_default = _to_json_safe(default_value)
+            if safe_default is None:
+                # If default cannot be serialized, we can't compare, so skip this property
+                continue
+
+            # If they are the same after conversion, skip
+            if safe_current == safe_default:
+                continue
+            
+            # Special handling for pointer properties to store them in our desired format
+            if prop.type == 'POINTER' and isinstance(current_value, bpy.types.ID):
+                pointed_uuid = uuid_manager.get_uuid(current_value)
+                if pointed_uuid:
+                    overrides[prop.identifier] = {'_type': 'UUID_POINTER', 'value': pointed_uuid}
+                else:
+                    overrides[prop.identifier] = None # Pointer is cleared
+            else:
+                overrides[prop.identifier] = safe_current
+
+        except AttributeError:
+            continue
+
+    print(f"[FN_DEBUG] _serialize_overrides: Final overrides dict: {overrides}")
+    return json.dumps(overrides) if overrides else "{}"
+
+def _apply_overrides(datablock, tree, datablock_uuid):
+    """
+    Applies stored overrides from the tree's fn_override_map to a datablock.
+    """
+    override_entry = next((item for item in tree.fn_override_map if item.datablock_uuid == datablock_uuid), None)
+    if not override_entry:
+        return
+
+    try:
+        overrides = json.loads(override_entry.override_data_json)
+    except json.JSONDecodeError:
+        print(f"[FN_ERROR] Could not decode override JSON for {datablock_uuid}")
+        return
+
+    for key, value in overrides.items():
+        try:
+            # Handle UUID pointers
+            if isinstance(value, dict) and value.get('_type') == 'UUID_POINTER':
+                pointed_db = uuid_manager.find_datablock_by_uuid(value['value'])
+                if pointed_db:
+                    _set_nested_property(datablock, key, pointed_db)
+            # Handle mathutils types stored as lists
+            elif isinstance(value, list):
+                # Create a new mathutils object from the list
+                # We need to know the type of the property to reconstruct it correctly
+                prop = _get_nested_property(datablock, key)
+                if prop:
+                    if isinstance(prop, mathutils.Color):
+                        _set_nested_property(datablock, key, mathutils.Color(value))
+                    elif isinstance(prop, mathutils.Euler):
+                        _set_nested_property(datablock, key, mathutils.Euler(value))
+                    elif isinstance(prop, mathutils.Quaternion):
+                        _set_nested_property(datablock, key, mathutils.Quaternion(value))
+                    else: # Default to Vector for other lists
+                        _set_nested_property(datablock, key, mathutils.Vector(value))
+            # Handle simple values
+            else:
+                _set_nested_property(datablock, key, value)
+        except (AttributeError, TypeError, ValueError) as e:
+            print(f"[FN_WARNING] Could not apply override for property '{key}' on {datablock.name}: {e}")
+
+
+def _evaluate_active_branch(tree: bpy.types.NodeTree, active_socket: bpy.types.NodeSocket, active_branch_nodes: set):
+    """Evaluates only the nodes in the active branch and returns the execution plan for that branch."""
+    session_cache = {}
+    active_uuids = set()
+    active_states = {}
+    active_relationships = []
+    active_assignments = []
+    creation_declarations = {}
+    load_file_declarations = [] # New: Collects load file intents
+
+    # We start the recursive evaluation from the final active node.
+    # The recursive function `_evaluate_node` will handle the dependency chain.
+    _evaluate_node(tree, active_socket.node, session_cache, active_uuids, active_relationships, active_states, active_assignments, creation_declarations, load_file_declarations)
+
+    return session_cache, active_uuids, active_states, active_relationships, active_assignments, creation_declarations, load_file_declarations
+
+
+def _synchronize_blender_state(tree, active_uuids, active_states, active_relationships, active_assignments, creation_declarations):
+    print("--- Synchronizing Blender State ---")
+    print(f"Active UUIDs in plan: {active_uuids}")
+    """
+    Takes the active plan and synchronizes Blender's state.
+    Destroys datablocks not in the active plan and creates/updates those that are.
+    """
+    # --- 1. Destruction Phase ---
+    all_managed_datablocks = uuid_manager.get_all_managed_datablocks()
+    uuids_to_destroy = set(all_managed_datablocks.keys()) - active_uuids
+    print(f"UUIDs to DESTROY: {uuids_to_destroy}")
+
+    if uuids_to_destroy:
+        for uuid_to_destroy in uuids_to_destroy:
+            datablock_to_destroy = all_managed_datablocks.get(uuid_to_destroy)
+            if not datablock_to_destroy:
+                continue
+
+            # a. Serialize overrides before destruction
+            override_json = _serialize_overrides(datablock_to_destroy)
+            if override_json and override_json != "{}":
+                print(f"[FN_DEBUG] _synchronize_blender_state: Serialized overrides for {datablock_to_destroy.name} ({uuid_to_destroy}): {override_json}")
+                override_entry = next((item for item in tree.fn_override_map if item.datablock_uuid == uuid_to_destroy), None)
+                if not override_entry:
+                    override_entry = tree.fn_override_map.add()
+                    override_entry.datablock_uuid = uuid_to_destroy
+                    print(f"[FN_DEBUG] _synchronize_blender_state: Added new override entry for {uuid_to_destroy} to fn_override_map.")
+                override_entry.datablock_type = datablock_to_destroy.bl_rna.identifier
+                override_entry.override_data_json = override_json
+                print(f"[FN_DEBUG] _synchronize_blender_state: Updated override entry for {uuid_to_destroy} in fn_override_map.")
+
+            # b. Remove from Blender
+            datablock_type_name = datablock_to_destroy.bl_rna.identifier
+            collection = getattr(bpy.data, datablock_type_name.lower() + 's', None)
+            if collection:
+                try:
+                    collection.remove(datablock_to_destroy)
+                    print(f"[FN_DEBUG] _synchronize_blender_state: Removed datablock {datablock_to_destroy.name} ({uuid_to_destroy}) from Blender.")
+                except (ReferenceError, RuntimeError) as e:
+                    print(f"[FN_WARNING] Could not remove datablock {uuid_to_destroy}: {e}")
     
-    if final_socket:
-        sync_active_socket(tree, final_socket)
-    else:
-        print("--- [Reconciler] No final active socket found. Skipping execution. ---")
-
-
-# --- Public API ---
-
-def sync_active_socket(tree: bpy.types.NodeTree, active_socket: bpy.types.NodeSocket):
-    """
-    Synchronizes the Blender scene to match the state defined by the active node
-    and its dependencies. This is the main entry point for the new engine.
-    """
-    print(f"--- [Reconciler] Syncing active socket: {active_socket.node.name}.{active_socket.identifier} ---")
-    # TEMPORARY: Clear the entire execution cache for debugging
-    if 'fn_execution_cache' in tree:
-        del tree['fn_execution_cache']
-        print("--- [Reconciler] TEMPORARY: Cleared fn_execution_cache ---")
-
-    # 1. Evaluate the node tree "pull-style" starting from the active socket.
-    # This phase creates/updates datablocks in memory and returns the desired final state.
-    required_state, active_socket_evaluated_output, evaluated_nodes_and_sockets, required_relationships = _evaluate_node_tree(tree, active_socket)
+    # --- 2. Clean up persistent maps from destroyed datablocks ---
+    # This is a simplified cleanup. A more robust version might be needed.
+    # We remove any entry whose UUID is no longer managed.
+    all_managed_uuids = set(uuid_manager.get_all_managed_datablocks().keys())
     
-    # 2. Get the current managed state from the Blender scene.
-    # This finds all datablocks that our addon currently manages.
-    managed_datablocks_in_scene = _get_managed_datablocks_in_scene()
+    # Clean state map
+    indices_to_remove = [i for i, item in enumerate(tree.fn_state_map) for uuid in item.datablock_uuids.split(',') if uuid and uuid not in all_managed_uuids]
+    if indices_to_remove:
+        print(f"[FN_DEBUG] _synchronize_blender_state: Cleaning up fn_state_map. Indices to remove: {indices_to_remove}")
+    for i in sorted(list(set(indices_to_remove)), reverse=True):
+        tree.fn_state_map.remove(i)
 
-    print(f"  - GC Debug: Required UUIDs: {list(required_state.keys())}")
-    print(f"  - GC Debug: Current Managed UUIDs: {list(managed_datablocks_in_scene.keys())}")
+    # Clean relationship map
+    indices_to_remove = [i for i, item in enumerate(tree.fn_relationships_map) if item.source_uuid not in all_managed_uuids or item.target_uuid not in all_managed_uuids]
+    if indices_to_remove:
+        print(f"[FN_DEBUG] _synchronize_blender_state: Cleaning up fn_relationships_map. Indices to remove: {indices_to_remove}")
+    for i in sorted(list(set(indices_to_remove)), reverse=True):
+        tree.fn_relationships_map.remove(i)
 
-    # 3. Perform the diff and sync.
-    # This primarily handles garbage collection (deleting what's no longer required).
-    _diff_and_sync(tree, required_state, managed_datablocks_in_scene, required_relationships)
+    # Clean property assignments map
+    indices_to_remove = [i for i, item in enumerate(tree.fn_property_assignments_map) if item.target_uuid not in all_managed_uuids]
+    if indices_to_remove:
+        print(f"[FN_DEBUG] _synchronize_blender_state: Cleaning up fn_property_assignments_map. Indices to remove: {indices_to_remove}")
+    for i in sorted(list(set(indices_to_remove)), reverse=True):
+        tree.fn_property_assignments_map.remove(i)
 
-    # 4. Reset all is_active flags
+    # Clean override map
+    indices_to_remove = [i for i, item in enumerate(tree.fn_override_map) if item.datablock_uuid not in active_uuids]
+    if indices_to_remove:
+        print(f"[FN_DEBUG] _synchronize_blender_state: Cleaning up fn_override_map. Indices to remove: {indices_to_remove}")
+    for i in sorted(list(set(indices_to_remove)), reverse=True):
+        tree.fn_override_map.remove(i)
+
+    # --- 3. Creation/Update Phase ---
+    # Sort creation declarations topologically to respect dependencies
+    sorted_creation_uuids = _topological_sort_creation_declarations(creation_declarations)
+
+    for uuid in sorted_creation_uuids:
+        # Only process if this UUID is part of the active plan
+        if uuid not in active_uuids:
+            continue
+
+        datablock = uuid_manager.find_datablock_by_uuid(uuid)
+        if not datablock:
+            # Datablock does not exist, create it using the stored declaration
+            creation_declaration = creation_declarations.get(uuid)
+            if creation_declaration:
+                if creation_declaration['type'] == 'DERIVE':
+                    source_uuid = creation_declaration['source_uuid']
+                    new_name = creation_declaration['new_name']
+                    source_datablock = uuid_manager.find_datablock_by_uuid(source_uuid)
+
+                    if source_datablock:
+                        datablock = source_datablock.copy()
+                        uuid_manager.set_uuid(datablock, target_uuid=uuid)
+                        if new_name:
+                            datablock.name = new_name
+                        if isinstance(datablock, bpy.types.Scene):
+                            datablock.use_extra_user = True
+                        print(f"[FN_DEBUG] _synchronize_blender_state: Derived new datablock {datablock.name} ({uuid}) from {source_uuid}.")
+                    else:
+                        print(f"[FN_WARNING] Source datablock {source_uuid} not found for derivation of {uuid}.")
+                        continue
+                elif creation_declaration['type'] == 'COPY':
+                    source_uuid = creation_declaration['source_uuid']
+                    source_datablock = uuid_manager.find_datablock_by_uuid(source_uuid)
+
+                    if source_datablock:
+                        datablock = source_datablock.copy()
+                        uuid_manager.set_uuid(datablock, target_uuid=uuid)
+                        # Copy overrides from original datablock to the new one
+                        original_override_entry = next((item for item in tree.fn_override_map if item.datablock_uuid == source_uuid), None)
+                        if original_override_entry:
+                            new_override_entry = tree.fn_override_map.add()
+                            new_override_entry.datablock_uuid = uuid
+                            new_override_entry.datablock_type = original_override_entry.datablock_type
+                            new_override_entry.override_data_json = original_override_entry.override_data_json
+                            print(f"[FN_DEBUG] Copied overrides from {source_uuid} to new branched datablock {uuid}")
+                        print(f"[FN_DEBUG] _synchronize_blender_state: Copied datablock {datablock.name} ({uuid}) from {source_uuid}.")
+                    else:
+                        print(f"[FN_WARNING] Source datablock {source_uuid} not found for copy of {uuid}.")
+                        continue
+                else:
+                    datablock_type = creation_declaration['type']
+                    creation_func = _datablock_creation_map.get(datablock_type)
+
+                    if creation_func:
+                        if datablock_type == 'IMAGE':
+                            datablock = creation_func(uuid, creation_declaration['width'], creation_declaration['height'])
+                        elif datablock_type == 'LIGHT':
+                            datablock = creation_func(uuid, creation_declaration['light_type'])
+                        else:
+                            datablock = creation_func(uuid)
+                        
+                        # Assign the declared UUID to the newly created datablock
+                        uuid_manager.set_uuid(datablock, target_uuid=uuid)
+
+                        if datablock_type == 'SCENE':
+                            datablock.use_extra_user = True
+
+                        print(f"[FN_DEBUG] _synchronize_blender_state: Created new datablock {datablock.name} ({uuid}).")
+                    else:
+                        print(f"[FN_ERROR] Unknown datablock type for creation: {datablock_type}")
+                        continue
+            else:
+                print(f"[FN_WARNING] No creation declaration found for UUID {uuid}. Skipping creation.")
+                continue
+
+        if datablock:
+            # This is a newly created or existing datablock. Apply overrides.
+            print(f"[FN_DEBUG] _synchronize_blender_state: Attempting to apply overrides for datablock {datablock.name} ({uuid}).")
+            _apply_overrides(datablock, tree, uuid)
+            # After applying, we can remove the override entry as it's now "live"
+            override_entry_idx = tree.fn_override_map.find(uuid)
+            if override_entry_idx != -1:
+                print(f"[FN_DEBUG] _synchronize_blender_state: Removing override entry for {uuid} from fn_override_map after application.")
+                tree.fn_override_map.remove(override_entry_idx)
+
+    # --- 4. Synchronize States, Relationships, and Properties (Defensive Writes) ---
+    print("[FN_DEBUG] Phase 4: Synchronizing maps defensively.")
+
+    # State Map Synchronization
+    current_states = {item.node_id: item.datablock_uuids for item in tree.fn_state_map}
+    for node_id, uuids in active_states.items():
+        if current_states.get(node_id) != uuids:
+            print(f"    [STATE_MAP] Updating state for node {node_id}.")
+            map_item = next((item for item in tree.fn_state_map if item.node_id == node_id), None)
+            if not map_item:
+                map_item = tree.fn_state_map.add()
+                map_item.node_id = node_id
+            map_item.datablock_uuids = uuids
+
+    # Relationship Map Synchronization
+    current_relationships = {(item.source_uuid, item.target_uuid, item.relationship_type) for item in tree.fn_relationships_map}
+    active_rel_tuples = {(r['source_uuid'], r['target_uuid'], r['relationship_type']) for r in active_relationships}
+    
+    rels_to_add = active_rel_tuples - current_relationships
+    
+    for rel_tuple in rels_to_add:
+        print(f"    [REL_MAP] Adding relationship: {rel_tuple}")
+        _link_relationship(rel_tuple)
+        new_rel = tree.fn_relationships_map.add()
+        new_rel.source_uuid, new_rel.target_uuid, new_rel.relationship_type = rel_tuple
+
+    for assign in active_assignments:
+        target_db = uuid_manager.find_datablock_by_uuid(assign['target_uuid'])
+        if not target_db:
+            continue
+
+        prop_name = assign['property_name']
+        
+        # Determine the value from the execution plan
+        plan_value = None
+        if assign['value_type'] == 'UUID':
+            plan_value = uuid_manager.find_datablock_by_uuid(assign['value_uuid'])
+        elif assign['value_type'] == 'LITERAL':
+            plan_value = json.loads(assign['value_json'])
+
+        # Get the current value directly from the datablock
+        current_value = _get_nested_property(target_db, prop_name)
+
+        # THE CRITICAL CHECK: Only write if the plan differs from the reality
+        if current_value != plan_value:
+            print(f"    [PROP_ASSIGN] Updating property '{prop_name}' on {target_db.name}. From '{current_value}' to '{plan_value}'")
+            if _set_nested_property(target_db, prop_name, plan_value):
+                # Update the persistent map since we made a change
+                map_item = next((item for item in tree.fn_property_assignments_map if item.target_uuid == assign['target_uuid'] and item.property_name == prop_name), None)
+                if not map_item:
+                    map_item = tree.fn_property_assignments_map.add()
+                    map_item.target_uuid = assign['target_uuid']
+                    map_item.property_name = prop_name
+                map_item.value_type = assign['value_type']
+                map_item.value_uuid = assign['value_uuid']
+                map_item.value_json = assign['value_json']
+
+
+def _get_required_uuids_for_socket(socket, session_cache):
+    """Traces the dependency graph backwards from a given socket to find all required UUIDs for that specific branch."""
+    required_uuids = set()
+    nodes_to_visit = {socket.node}
+    visited_nodes = set()
+
+    while nodes_to_visit:
+        current_node = nodes_to_visit.pop()
+        if current_node in visited_nodes:
+            continue
+        visited_nodes.add(current_node)
+
+        node_results = session_cache.get(current_node.fn_node_id, {})
+        for val in node_results.values():
+            if isinstance(val, bpy.types.ID):
+                required_uuids.add(uuid_manager.get_uuid(val))
+            elif isinstance(val, list):
+                for item in val:
+                    if isinstance(item, bpy.types.ID):
+                        required_uuids.add(uuid_manager.get_uuid(item))
+
+        for input_socket in current_node.inputs:
+            if input_socket.is_linked:
+                nodes_to_visit.add(input_socket.links[0].from_node)
+                
+    return required_uuids
+
+def _get_active_branch_node_ids(active_socket: bpy.types.NodeSocket) -> set:
+    """Traces the dependency graph backwards from the active socket to find all node IDs in that branch."""
+    branch_node_ids = set()
+    nodes_to_visit = {active_socket.node}
+    visited_nodes = set()
+
+    while nodes_to_visit:
+        current_node = nodes_to_visit.pop()
+        if current_node in visited_nodes:
+            continue
+        visited_nodes.add(current_node)
+        branch_node_ids.add(current_node.fn_node_id)
+
+        for input_socket in current_node.inputs:
+            if input_socket.is_linked:
+                nodes_to_visit.add(input_socket.links[0].from_node)
+    
+    return branch_node_ids
+
+def update_ui_for_active_socket(tree: bpy.types.NodeTree, active_socket: bpy.types.NodeSocket, session_cache: dict):
+    """
+    Handles UI updates for the active socket using a pre-filled cache.
+    """
     for node in tree.nodes:
         for sock in node.outputs:
             sock.is_active = False
+    _trace_active_path(active_socket, session_cache)
 
-    # 5. Trace the active path and set is_active flags
-    _trace_active_path(active_socket, evaluated_nodes_and_sockets)
+    # Get the UUID of the datablock that the active socket's node is responsible for
+    # We get it from the session_cache, which holds the actual output of the node's execution
+    node_results = session_cache.get(active_socket.node.fn_node_id)
+    if not node_results:
+        print(f"[FN_DEBUG] update_ui_for_active_socket: No node results found for {active_socket.node.fn_node_id}")
+        return
 
-    # 6. Set the active datablock in Blender based on the active socket's output
-    if active_socket_evaluated_output is not None:
-        target_datablock = None
-        # If the output is a dictionary (from a node returning {socket_id: value})
-        if isinstance(active_socket_evaluated_output, dict):
-            # Get the actual value from the dictionary using the active socket's identifier
-            active_socket_evaluated_output = active_socket_evaluated_output.get(active_socket.identifier)
+    final_output_uuid = node_results.get(active_socket.identifier)
+    if not final_output_uuid:
+        print(f"[FN_DEBUG] update_ui_for_active_socket: No output UUID found for socket {active_socket.identifier} on node {active_socket.node.fn_node_id}")
+        return
 
-        if isinstance(active_socket_evaluated_output, list):
-            if active_socket_evaluated_output:
-                target_datablock = active_socket_evaluated_output[0] # Take the first item from the list
-        else:
-            target_datablock = active_socket_evaluated_output
+    print(f"[FN_DEBUG] update_ui_for_active_socket: final_output_uuid = {final_output_uuid}")
 
-        if target_datablock:
-            # If the target_datablock is still a dictionary (e.g., from a node's output dict)
-            if isinstance(target_datablock, dict):
-                # Assuming it's a single output, get its value
-                target_datablock = next(iter(target_datablock.values()), None)
+    # Find the actual datablock in Blender using its UUID
+    final_output_val = uuid_manager.find_datablock_by_uuid(final_output_uuid)
+    print(f"[FN_DEBUG] update_ui_for_active_socket: final_output_val = {final_output_val} (Type: {type(final_output_val).__name__ if final_output_val else 'None'})")
 
-            if isinstance(target_datablock, bpy.types.Scene):
-                bpy.context.window.scene = target_datablock
-                print(f"  - Set active scene to: {target_datablock.name}")
-            # No specific activation logic for Object or Collection, as _diff_and_sync handles linking
-            else:
-                print(f"  - No specific activation logic for type: {type(target_datablock).__name__}")
+    if isinstance(final_output_val, bpy.types.Scene):
+        print(f"[FN_DEBUG] update_ui_for_active_socket: Setting bpy.context.window.scene to {final_output_val.name}")
+        bpy.context.window.scene = final_output_val
 
-    print(f"--- [Reconciler] Sync finished ---")
-
-    # Update the last evaluated hash for performance optimization
-    tree.fn_last_evaluated_hash = _get_node_and_input_hash(tree, active_socket.node)
-
-# --- Core Logic ---
-
-def _evaluate_node_tree(tree: bpy.types.NodeTree, active_socket: bpy.types.NodeSocket) -> tuple[dict, any, dict, set]:
+def _evaluate_node(tree, node, session_cache, required_uuids, required_relationships, required_states, required_assignments, creation_declarations, load_file_declarations):
     """
-    Performs a "pull" evaluation backwards from the active socket.
-    It uses recursion with memoization (a cache) to avoid re-evaluating nodes.
-    This function is the heart of the new engine.
-    Returns a tuple: (all_managed_datablocks, active_socket_evaluated_output, evaluated_nodes_and_sockets, required_relationships)
+    Recursively evaluates a node, populating the required state declarations.
     """
-    # This is a session cache, it's cleared for every full execution run.
-    # It stores (result_dict, hash) tuples.
-    session_cache = {}
-    evaluated_nodes_and_sockets = {}
-    
-    # The main recursive call, starting from the node of the active socket
-    _evaluate_node(tree, active_socket.node, session_cache, evaluated_nodes_and_sockets)
-    
-    # The session_cache now contains the results of all evaluated nodes.
-    # We need to return a dictionary of all datablocks that are part of the final state.
-    final_state = {}
-    active_socket_evaluated_output = None # Initialize to None
-
-    # Iterate through the session_cache to build final_state and get active_socket_evaluated_output
-    for node_id, (result_dict, result_hash) in session_cache.items():
-        # Build final_state
-        if isinstance(result_dict, dict):
-            for socket_id, result in result_dict.items():
-                if isinstance(result, str) and result.startswith('uuid:'):
-                    uuid = result.split(':')[1]
-                    # Add UUID to final_state directly, regardless of whether datablock is found immediately
-                    final_state[uuid] = None # Store None as a placeholder for now
-                    # We still try to find it to get the actual datablock if available
-                    datablock = uuid_manager.find_datablock_by_uuid(uuid)
-                    if datablock:
-                        final_state[uuid] = datablock # Update with actual datablock if found
-                elif isinstance(result, list):
-                    for item in result:
-                        if isinstance(item, str) and item.startswith('uuid:'):
-                            uuid = item.split(':')[1]
-                            final_state[uuid] = None # Store None as a placeholder
-                            datablock = uuid_manager.find_datablock_by_uuid(uuid)
-                            if datablock:
-                                final_state[uuid] = datablock # Update with actual datablock if found
-        
-        # Get active_socket_evaluated_output if this is the active node
-        if node_id == active_socket.node.fn_node_id:
-            if isinstance(result_dict, dict):
-                active_socket_evaluated_output = result_dict.get(active_socket.identifier)
-                # If it's a UUID string, resolve it to the actual datablock
-                if isinstance(active_socket_evaluated_output, str) and active_socket_evaluated_output.startswith('uuid:'):
-                    active_socket_evaluated_output = uuid_manager.find_datablock_by_uuid(active_socket_evaluated_output.split(':')[1])
-            elif isinstance(result_dict, list): # Handle list outputs for active socket
-                # If the active socket is a list, we might need to resolve all items
-                resolved_list = []
-                for item in result_dict:
-                    if isinstance(item, str) and item.startswith('uuid:'):
-                        resolved_list.append(uuid_manager.find_datablock_by_uuid(item.split(':')[1]))
-                    else:
-                        resolved_list.append(item)
-                active_socket_evaluated_output = resolved_list
-
-    # Collect required relationships
-    required_relationships = set()
-    for rel_item in tree.fn_relationships_map:
-        if rel_item.node_id in evaluated_nodes_and_sockets:
-            required_relationships.add((rel_item.source_uuid, rel_item.target_uuid, rel_item.relationship_type))
-
-    return final_state, active_socket_evaluated_output, evaluated_nodes_and_sockets, required_relationships
-
-def _get_node_and_input_hash(tree: bpy.types.NodeTree, node: bpy.types.Node) -> str:
-    """
-    Calculates a hash for a given node based on its own properties and the values of its direct inputs.
-    This is used to determine if a node's state has changed, triggering re-evaluation.
-    """
-    hasher = hashlib.sha256()
-    node.update_hash(hasher) # Include the node's own properties in the hash
-
-    # Include hashes of direct input values
-    for input_socket in node.inputs:
-        if input_socket.is_linked:
-            from_node = input_socket.links[0].from_node
-            # Recursively get the hash of the upstream node's state
-            upstream_node_hash = _get_node_and_input_hash(tree, from_node)
-            hasher.update(upstream_node_hash.encode())
-        else:
-            # For unlinked inputs, hash their default value
-            val = getattr(input_socket, 'default_value', None)
-            if val is not None:
-                hasher.update(str(tuple(val) if isinstance(val, (list, bpy.types.bpy_prop_array)) else val).encode())
-
-    return hasher.hexdigest()
-
-def _evaluate_node(tree: bpy.types.NodeTree, node: bpy.types.Node, cache: dict, evaluated_nodes_and_sockets: dict):
-    """
-    Recursively evaluates a single node and its dependencies, using a cache to avoid re-evaluation.
-    Returns a tuple: (result_dictionary, result_hash)
-    """
-    # If this node's result is already in the session cache, return it immediately.
-    if node.fn_node_id in cache:
-        return cache[node.fn_node_id]
-
-    hasher = hashlib.sha256()
-    node.update_hash(hasher)  # Start hash with the node's own static properties
+    if node.fn_node_id in session_cache:
+        return session_cache[node.fn_node_id]
 
     kwargs = {'tree': tree}
-    input_hashes = []
-
-    # --- Special Handling for Switch Node ---
-    if node.bl_idname == "FN_switch":
-        print(f"  - Evaluating Switch Node: {node.name}")
-        control_socket_name = 'Switch' if node.switch_type == 'BOOLEAN' else 'Index'
-        control_socket = node.inputs.get(control_socket_name)
-        control_value = None
-        control_hash = ''
-
-        # 1. Evaluate the control socket first
-        if control_socket.is_linked:
-            link = control_socket.links[0]
-            upstream_dict, upstream_hash = _evaluate_node(tree, link.from_node, cache, evaluated_nodes_and_sockets)
-            control_hash = upstream_hash
-            if upstream_dict:
-                control_value = upstream_dict.get(link.from_socket.identifier)
-        else:
-            control_value = control_socket.default_value
-            control_hash = str(control_value) # Simple hash for default value
-
-        hasher.update(control_hash.encode())
-        kwargs[control_socket.identifier] = control_value
-        
-        # 2. Determine the active data socket based on the control value
-        active_socket_name = None
-        if node.switch_type == 'BOOLEAN':
-            active_socket_name = 'True' if control_value else 'False'
-        elif node.switch_type == 'INDEX' and isinstance(control_value, int):
-            if 0 <= control_value < node.item_count:
-                active_socket_name = str(control_value)
-
-        # 3. Evaluate only the active branch
-        output_value = None
-        if active_socket_name:
-            active_socket = node.inputs.get(active_socket_name)
-            if active_socket and active_socket.is_linked:
-                link = active_socket.links[0]
-                # RECURSIVE CALL for the active branch
-                upstream_dict, upstream_hash = _evaluate_node(tree, link.from_node, cache, evaluated_nodes_and_sockets)
-                input_hashes.append(upstream_hash) # Add active branch hash to the main hash
-                if upstream_dict:
-                    output_value = upstream_dict.get(link.from_socket.identifier)
-            elif active_socket: # Unlinked but exists
-                output_value = getattr(active_socket, 'default_value', None)
-                # Add default value to hash
-                input_hashes.append(str(tuple(output_value) if isinstance(output_value, (list, bpy.types.bpy_prop_array)) else output_value))
-
-        # All other kwargs for the switch execute are None
-        for input_socket in node.inputs:
-            if input_socket.identifier not in kwargs:
-                 kwargs[input_socket.identifier] = None
-        
-        # The final output of the switch node is just the value from the active branch
-        kwargs[node.outputs[0].identifier] = output_value
-        
-        # Finalize the hash and check cache
-        for h in sorted(input_hashes):
-            hasher.update(h.encode())
-        current_hash = hasher.hexdigest()
-
-        # --- Cache Check for Switch ---
-        # (This part is now combined with the main cache check below)
-
-    # --- Normal Evaluation for other nodes ---
-    else:
-        for input_socket in node.inputs:
-            if input_socket.is_linked:
-                link = input_socket.links[0]
-                from_node = link.from_node
-                from_socket = link.from_socket
-
-                upstream_result_dict, upstream_hash = _evaluate_node(tree, from_node, cache, evaluated_nodes_and_sockets)
-                input_hashes.append(upstream_hash)
-                
-                if upstream_result_dict and isinstance(upstream_result_dict, dict):
-                    kwargs[input_socket.identifier] = upstream_result_dict.get(from_socket.identifier)
-                else:
-                    kwargs[input_socket.identifier] = None
-            else:
-                val = getattr(input_socket, 'default_value', None)
-                kwargs[input_socket.identifier] = val
-                if val is not None:
-                    hasher.update(str(tuple(val) if isinstance(val, (list, bpy.types.bpy_prop_array)) else val).encode())
-
-    # --- Hashing, Caching, and Execution (Common for all nodes) ---
-    if node.bl_idname != "FN_switch": # Hash for normal nodes was not finalized yet
-        for h in sorted(input_hashes):
-            hasher.update(h.encode())
-        current_hash = hasher.hexdigest()
-
-    skip_cache = node.bl_idname in ACTION_NODES
-
-    cached_entry = None
-    if not skip_cache:
-        for entry in tree.fn_execution_cache:
-            if entry.node_id == node.fn_node_id and entry.hash == current_hash:
-                cached_entry = entry
-                break
-
-    if cached_entry:
-        print(f"  - Cache HIT for: {node.name}")
-        cached_data = json.loads(cached_entry.result_json)
-        cache[node.fn_node_id] = (cached_data, current_hash)
-        # We still need to populate evaluated_nodes_and_sockets for path tracing
-        # This reconstruction is a simplification and might need to be more robust
-        evaluated_nodes_and_sockets[node.fn_node_id] = {
-            "node": node,
-            "output_sockets": {s.identifier: s for s in node.outputs},
-            "input_sockets_values": kwargs # Use the kwargs we've already built
-        }
-        return cached_data, current_hash
-
-    if skip_cache:
-        print(f"  - Executing non-cacheable node type: {node.name}")
-    else:
-        print(f"  - Cache MISS for: {node.name} (Hash: {current_hash[:7]}...)")
-
-    if hasattr(node, 'execute'):
-        resolved_kwargs = {}
-        for key, value in kwargs.items():
-            if isinstance(value, str) and value.startswith('uuid:'):
-                resolved_kwargs[key] = uuid_manager.find_datablock_by_uuid(value.split(':')[1])
-            elif isinstance(value, list):
-                resolved_list = []
-                for item in value:
-                    if isinstance(item, str) and item.startswith('uuid:'):
-                        resolved_list.append(uuid_manager.find_datablock_by_uuid(item.split(':')[1]))
-                    else:
-                        resolved_list.append(item)
-                resolved_kwargs[key] = resolved_list
-            else:
-                resolved_kwargs[key] = value
-        
-        result_dict = node.execute(**resolved_kwargs)
-        
-        uuid_result_dict = {}
-        if result_dict:
-            for key, value in result_dict.items():
-                if isinstance(value, bpy.types.ID):
-                    uuid_result_dict[key] = f"uuid:{uuid_manager.get_or_create_uuid(value)}"
-                elif isinstance(value, list) and all(isinstance(i, bpy.types.ID) for i in value):
-                    uuid_result_dict[key] = [f"uuid:{uuid_manager.get_or_create_uuid(i)}" for i in value]
-                else:
-                    uuid_result_dict[key] = value
-
-        if not skip_cache:
-            cache_entry = next((e for e in tree.fn_execution_cache if e.node_id == node.fn_node_id), None)
-            if not cache_entry:
-                cache_entry = tree.fn_execution_cache.add()
-                cache_entry.node_id = node.fn_node_id
-            cache_entry.hash = current_hash
-            cache_entry.result_json = json.dumps(uuid_result_dict)
-
-        cache[node.fn_node_id] = (uuid_result_dict, current_hash)
-        evaluated_nodes_and_sockets[node.fn_node_id] = {
-            "node": node,
-            "output_sockets": {s.identifier: s for s in node.outputs},
-            "input_sockets_values": kwargs
-        }
-        return uuid_result_dict, current_hash
-    
-    return {}, current_hash
-
-def _trace_active_path(current_socket: bpy.types.NodeSocket, evaluated_nodes_and_sockets: dict):
-    """
-    Recursively traces the active path backwards from the current_socket
-    and sets the is_active flag for all sockets in the path.
-    """
-    if not current_socket:
-        return
-
-    # Mark the current socket as active
-    current_socket.is_active = True
-
-    # Get the node that owns this socket
-    current_node = current_socket.node
-
-    # Get the evaluated info for this node
-    node_info = evaluated_nodes_and_sockets.get(current_node.fn_node_id)
-    if not node_info:
-        return
-
-    # Find which input socket(s) contributed to the current_socket's output
-    # This logic depends on how each node's execute method works.
-    # For now, we'll assume that if an input socket is linked and its value
-    # was used to produce the output, it's part of the active path.
-    # This is a simplification and might need refinement for complex nodes (e.g., Switch).
-
-    # For a Switch node, only the selected input should be active.
-    if current_node.bl_idname == "FN_switch":
-        switch_type = current_node.switch_type
-        if switch_type == 'BOOLEAN':
-            switch_value = node_info["input_sockets_values"].get(current_node.inputs['Switch'].identifier)
-            if switch_value is True:
-                # Trace back through the 'True' input
-                true_input_socket = current_node.inputs.get('True')
-                if true_input_socket and true_input_socket.is_linked:
-                    _trace_active_path(true_input_socket.links[0].from_socket, evaluated_nodes_and_sockets)
-            else:
-                # Trace back through the 'False' input
-                false_input_socket = current_node.inputs.get('False')
-                if false_input_socket and false_input_socket.is_linked:
-                    _trace_active_path(false_input_socket.links[0].from_socket, evaluated_nodes_and_sockets)
-        elif switch_type == 'INDEX':
-            index = node_info["input_sockets_values"].get(current_node.inputs['Index'].identifier)
-            if index is not None:
-                item_input_socket = current_node.inputs.get(str(index))
-                if item_input_socket and item_input_socket.is_linked:
-                    _trace_active_path(item_input_socket.links[0].from_socket, evaluated_nodes_and_sockets)
-    else:
-        # For other nodes, assume all linked inputs contributed (simplification)
-        for input_socket in current_node.inputs:
-            if input_socket.is_linked:
-                _trace_active_path(input_socket.links[0].from_socket, evaluated_nodes_and_sockets)
-
-
-def _get_managed_datablocks_in_scene() -> dict:
-    """
-    Finds all datablocks in the current Blender file that have a `_fn_uuid`
-    and returns them as a dictionary of {uuid: datablock}.
-    """
-    managed_datablocks = {}
-    
-    # List of all bpy.data collections to scan
-    datablock_collections = [
-        bpy.data.objects, bpy.data.scenes, bpy.data.collections,
-        bpy.data.meshes, bpy.data.materials, bpy.data.images,
-        bpy.data.lights, bpy.data.cameras, bpy.data.worlds,
-        bpy.data.node_groups, bpy.data.texts, bpy.data.actions,
-        bpy.data.armatures, bpy.data.actions
-    ]
-
-    for collection in datablock_collections:
-        for datablock in collection:
-            # Use .get() for safety, returns None if property doesn't exist.
-            uuid = datablock.get(uuid_manager.FN_UUID_PROPERTY)
-            if uuid:
-                managed_datablocks[uuid] = datablock
-                
-    return managed_datablocks
-
-
-def _diff_and_sync(tree: bpy.types.NodeTree, required_state: dict, current_state: dict, required_relationships: set):
-    """
-    Manages the state of datablocks, including persistence, visibility, and garbage collection.
-    - Sets `use_fake_user` to preserve datablocks that are not currently required but should not be deleted.
-    - Links/unlinks objects and collections from the scene to control visibility.
-    - Renames datablocks with a `.` prefix to hide them from UI lists when not required.
-    - Deletes orphaned datablocks whose creator node has been removed.
-    """
-    required_uuids = set(required_state.keys())
-    existing_node_ids = {node.fn_node_id for node in tree.nodes}
-    active_scene = bpy.context.scene
-    all_managed_uuids = set(current_state.keys()).union(required_uuids)
-
-    # --- State Reconciliation (Preserve/Show/Hide/Rename) ---
-    for uuid in all_managed_uuids:
-        datablock = current_state.get(uuid) or required_state.get(uuid)
-        if not datablock:
-            continue
-
-        is_required = uuid in required_uuids
-        creator_node_id = next((item.node_id for item in tree.fn_state_map if uuid in item.datablock_uuids.split(',')), None)
-        creator_exists = creator_node_id in existing_node_ids
-
-        if is_required:
-            # STATE: Visible and Active
-            datablock.use_fake_user = False
-            
-            # 1. Ensure correct name (no dot prefix)
-            if datablock.name.startswith('.'):
-                datablock.name = datablock.name[1:]
-            
-            
-        
-        elif not is_required and creator_exists:
-            # STATE: Preserved and Hidden
-            datablock.use_fake_user = True
-
-            # 1. Unlink from scene if applicable
-            if isinstance(datablock, bpy.types.Object):
-                if datablock.name in active_scene.collection.objects:
-                    active_scene.collection.objects.unlink(datablock)
-            elif isinstance(datablock, bpy.types.Collection):
-                if datablock.name in active_scene.collection.children:
-                    active_scene.collection.children.unlink(datablock)
-
-            # 2. Ensure dot prefix in name
-            if not datablock.name.startswith('.'):
-                datablock.name = f".{datablock.name}"
-
-        elif not creator_exists:
-            # STATE: Orphaned (will be deleted in the next pass)
-            datablock.use_fake_user = False
-
-    # --- Relationship Reconciliation (Unlink what's no longer required) ---
-    relationships_to_remove_indices = []
-    for i, rel_item in enumerate(tree.fn_relationships_map):
-        current_relationship_tuple = (rel_item.source_uuid, rel_item.target_uuid, rel_item.relationship_type)
-        
-        if current_relationship_tuple not in required_relationships:
-            # This relationship is no longer required, attempt to unlink
-            source_datablock = uuid_manager.find_datablock_by_uuid(rel_item.source_uuid)
-            target_datablock = uuid_manager.find_datablock_by_uuid(rel_item.target_uuid)
-
-            if source_datablock and target_datablock:
-                try:
-                    if rel_item.relationship_type == "COLLECTION_OBJECT_LINK" and isinstance(target_datablock, bpy.types.Collection) and isinstance(source_datablock, bpy.types.Object):
-                        if target_datablock in source_datablock.users_collection:
-                            target_datablock.objects.unlink(source_datablock)
-                            print(f"  - Unlinked object '{source_datablock.name}' from collection '{target_datablock.name}'")
-                    elif rel_item.relationship_type == "COLLECTION_CHILD_LINK" and isinstance(target_datablock, bpy.types.Collection) and isinstance(source_datablock, bpy.types.Collection):
-                        print(f"  - Debug: COLLECTION_CHILD_LINK check: source_datablock in target_datablock.children = {source_datablock in target_datablock.children}")
-                        if source_datablock in target_datablock.children:
-                            target_datablock.children.unlink(source_datablock)
-                            print(f"  - Unlinked collection '{source_datablock.name}' from collection '{target_datablock.name}'")
-                    elif rel_item.relationship_type.startswith("OBJECT_DATA_ASSIGN") and isinstance(source_datablock, bpy.types.Object):
-                        # Check if the assigned data is still the one we're trying to unlink
-                        if source_datablock.data == target_datablock:
-                            source_datablock.data = None
-                            print(f"  - Cleared data of object '{source_datablock.name}'")
-                    elif rel_item.relationship_type == "SCENE_WORLD_ASSIGN" and isinstance(source_datablock, bpy.types.Scene):
-                        if source_datablock.world == target_datablock:
-                            source_datablock.world = None
-                            print(f"  - Cleared world of scene '{source_datablock.name}'")
-                    elif rel_item.relationship_type == "OBJECT_MATERIAL_ASSIGN" and isinstance(source_datablock, bpy.types.Object) and isinstance(target_datablock, bpy.types.Material):
-                        if source_datablock.data and target_datablock in source_datablock.data.materials:
-                            # Find the index of the material to remove it
-                            try:
-                                material_index = source_datablock.data.materials.find(target_datablock.name)
-                                if material_index != -1:
-                                    source_datablock.data.materials.pop(index=material_index)
-                                    print(f"  - Unassigned material '{target_datablock.name}' from object '{source_datablock.name}'")
-                            except Exception as e:
-                                print(f"  - Warning: Failed to remove material '{target_datablock.name}' from object '{source_datablock.name}': {e}")
-                    elif rel_item.relationship_type == "OBJECT_PARENTING" and isinstance(source_datablock, bpy.types.Object) and isinstance(target_datablock, bpy.types.Object):
-                        if source_datablock.parent == target_datablock:
-                            source_datablock.parent = None
-                            print(f"  - Unparented object '{source_datablock.name}' from '{target_datablock.name}'")
-                    elif rel_item.relationship_type == "COLLECTION_SCENE_LINK" and isinstance(source_datablock, bpy.types.Collection) and isinstance(target_datablock, bpy.types.Scene):
-                        if source_datablock.name in target_datablock.collection.children:
-                            target_datablock.collection.children.unlink(source_datablock)
-                            print(f"  - Unlinked collection '{source_datablock.name}' from scene '{target_datablock.name}'")
-                    elif rel_item.relationship_type == "OBJECT_SCENE_LINK" and isinstance(source_datablock, bpy.types.Object) and isinstance(target_datablock, bpy.types.Scene):
-                        if source_datablock.name in target_datablock.collection.objects:
-                            target_datablock.collection.objects.unlink(source_datablock)
-                            print(f"  - Unlinked object '{source_datablock.name}' from scene '{target_datablock.name}'")
-                except Exception as e:
-                    print(f"  - Warning: Failed to unlink relationship {current_relationship_tuple}: {e}")
-            
-            relationships_to_remove_indices.append(i)
-        elif rel_item.node_id not in existing_node_ids:
-            # Relationship's creator node no longer exists, mark for removal
-            relationships_to_remove_indices.append(i)
-
-    # Remove relationships that are no longer required or whose creator nodes are gone
-    for i in sorted(relationships_to_remove_indices, reverse=True):
-        tree.fn_relationships_map.remove(i)
-
-
-    # --- Garbage Collection of Orphaned Datablocks (final pass) ---
-    removal_map = {
-        bpy.types.Object: bpy.data.objects,
-        bpy.types.Scene: bpy.data.scenes,
-        bpy.types.Mesh: bpy.data.meshes,
-        bpy.types.Material: bpy.data.materials,
-        bpy.types.Image: bpy.data.images,
-        bpy.types.Camera: bpy.data.cameras,
-        bpy.types.Light: bpy.data.lights,
-        bpy.types.NodeTree: bpy.data.node_groups,
-        bpy.types.Text: bpy.data.texts,
-        bpy.types.Collection: bpy.data.collections,
-        bpy.types.World: bpy.data.worlds,
-    }
-
-    orphaned_uuids_to_delete = []
-    for uuid in all_managed_uuids:
-        creator_node_id = next((item.node_id for item in tree.fn_state_map if uuid in item.datablock_uuids.split(',')), None)
-        if creator_node_id not in existing_node_ids:
-            datablock = current_state.get(uuid)
-            if not datablock:
-                continue
-            
-            remover_collection = removal_map.get(type(datablock))
-            if remover_collection:
-                # HACK: Do not garbage collect scenes automatically to avoid the ReferenceError
-                # that occurs when a scene is deleted right after being copied.
-                if isinstance(datablock, bpy.types.Scene):
-                    print(f"  - GC Info: Skipping automatic garbage collection for scene '{datablock.name}' to prevent potential errors.")
-                    # We can set use_fake_user to False so Blender's internal GC can get it on reload.
-                    datablock.use_fake_user = False
-                    continue
-
-                try:
-                    remover_collection.remove(datablock)
-                except (ReferenceError, RuntimeError):
-                    pass # Already removed
-
-    # --- Garbage Collection of fn_state_map ---
-    items_to_remove_indices = [i for i, item in enumerate(tree.fn_state_map) if item.node_id not in existing_node_ids]
-    if items_to_remove_indices:
-        for i in sorted(items_to_remove_indices, reverse=True):
-            tree.fn_state_map.remove(i)
-
-def _set_rna_property_value(rna_object: bpy.types.bpy_struct, rna_path: str, value):
-    """
-    Sets the value of an RNA property, handling nested paths.
-    rna_object: The bpy.types.bpy_struct instance (e.g., bpy.data.objects['Cube'])
-    rna_path: The path to the property (e.g., 'location', 'location[0]', 'cycles.diffuse_color')
-    value: The value to set.
-    """
-    parts = rna_path.split('.')
-    current_obj = rna_object
-    for i, part in enumerate(parts):
-        if i == len(parts) - 1:
-            # Last part, set the value
-            try:
-                # Handle array access (e.g., 'location[0]')
-                if '[' in part and part.endswith(']'):
-                    prop_name = part.split('[')[0]
-                    index = int(part.split('[')[1][:-1])
-                    if hasattr(current_obj, prop_name):
-                        current_obj[prop_name][index] = value
-                else:
-                    setattr(current_obj, part, value)
-            except AttributeError:
-                print(f"[Reconciler] Warning: Property '{rna_path}' not found on {rna_object.name}.")
-            except TypeError:
-                print(f"[Reconciler] Warning: Type mismatch for property '{rna_path}' on {rna_object.name}. Value: {value}")
-            except Exception as e:
-                print(f"[Reconciler] Error setting property '{rna_path}' on {rna_object.name}: {e}")
-        else:
-            # Navigate to the next nested object
-            try:
-                current_obj = getattr(current_obj, part)
-            except AttributeError:
-                print(f"[Reconciler] Warning: Nested property path '{part}' not found on {current_obj.name}.")
-                return # Cannot proceed if path is broken
-
-def _get_evaluated_inputs(tree: bpy.types.NodeTree, node: bpy.types.Node, cache: dict) -> dict:
-    """
-    Evaluates all inputs of a given node and returns a dictionary of their evaluated values.
-    """
-    evaluated_inputs = {}
     for input_socket in node.inputs:
         if input_socket.is_linked:
-            from_node = input_socket.links[0].from_node
-            evaluated_inputs[input_socket.identifier] = _evaluate_node(tree, from_node, cache)
-        else:
-            if hasattr(input_socket, 'default_value'):
-                evaluated_inputs[input_socket.identifier] = input_socket.default_value
+            link = input_socket.links[0]
+            upstream_results = _evaluate_node(tree, link.from_node, session_cache, required_uuids, required_relationships, required_states, required_assignments, creation_declarations, load_file_declarations)
+            value_from_upstream = upstream_results.get(link.from_socket.identifier) if isinstance(upstream_results, dict) else None
+
+            is_ramified = len(link.from_socket.links) > 1
+            is_mutable_input = input_socket.is_mutable
+
+            if is_ramified and is_mutable_input and uuid_manager.is_valid_uuid(value_from_upstream):
+                copy_id_key = f"{link.from_node.fn_node_id}:{link.from_socket.identifier}:{node.fn_node_id}:{input_socket.identifier}"
+                map_item = next((item for item in tree.fn_state_map if item.node_id == copy_id_key), None)
+                
+                copied_uuid = None
+                if map_item and map_item.datablock_uuids and ',' in map_item.datablock_uuids:
+                    original_uuid_in_map, stored_copy_uuid = map_item.datablock_uuids.split(',', 1)
+                    if original_uuid_in_map == value_from_upstream:
+                        copied_uuid = stored_copy_uuid
+
+                if copied_uuid:
+                    value_to_pass = copied_uuid
+                    required_states[copy_id_key] = map_item.datablock_uuids
+                else:
+                    new_uuid = uuid_manager.generate_uuid()
+                    creation_declarations[new_uuid] = {
+                        'type': 'COPY',
+                        'source_uuid': value_from_upstream
+                    }
+                    required_states[copy_id_key] = f"{value_from_upstream},{new_uuid}"
+                    required_uuids.add(new_uuid)
+                    value_to_pass = new_uuid
+                
+                kwargs[input_socket.identifier] = value_to_pass
             else:
-                evaluated_inputs[input_socket.identifier] = None # Default for unlinked sockets without default_value
-    return evaluated_inputs
-
-def evaluate_node_for_output(tree: bpy.types.NodeTree, output_node: bpy.types.Node) -> dict:
-    """
-    Evaluates the necessary part of the tree to get the inputs for a specific
-    output/action node (like Write File) and returns a dictionary of all evaluated inputs.
-    """
-    print(f"--- [Reconciler] Evaluating inputs for action node: {output_node.name} ---")
-    execution_cache = {}
+                # Ensure that any bpy.types.ID is converted to its UUID before passing to the node
+                if isinstance(value_from_upstream, bpy.types.ID):
+                    kwargs[input_socket.identifier] = uuid_manager.get_or_create_uuid(value_from_upstream)
+                else:
+                    kwargs[input_socket.identifier] = value_from_upstream
+        else:
+            kwargs[input_socket.identifier] = getattr(input_socket, 'default_value', None)
     
-    # Evaluate all inputs of the target node
-    evaluated_inputs = _get_evaluated_inputs(tree, output_node, execution_cache)
+    node_results = node.execute(**kwargs) if hasattr(node, 'execute') else {}
+    if node_results is None:
+        node_results = {}
 
-    # Collect all datablocks from the evaluated inputs
-    datablocks_for_output = set()
-    for key, value in evaluated_inputs.items():
-        if isinstance(value, list):
-            for item in value:
-                if isinstance(item, bpy.types.ID):
-                    datablocks_for_output.add(item)
-        elif isinstance(value, bpy.types.ID):
-            datablocks_for_output.add(value)
+    if 'relationships' in node_results:
+        for rel_tuple in node_results['relationships']:
+            rel_dict = {
+                'source_uuid': rel_tuple[0],
+                'target_uuid': rel_tuple[1],
+                'relationship_type': rel_tuple[2],
+                'source_node_id': node.fn_node_id
+            }
+            required_relationships.append(rel_dict)
+        del node_results['relationships']
 
-    # Return both the evaluated inputs (for properties like file_path) and the collected datablocks
-    return {
-        "inputs": evaluated_inputs,
-        "datablocks": datablocks_for_output
-    }
+    if 'states' in node_results:
+        for state_key, state_value in node_results['states'].items():
+            required_states[state_key] = state_value
+        del node_results['states']
+
+    if 'property_assignments' in node_results:
+        for assignment in node_results['property_assignments']:
+            assignment['source_node_id'] = node.fn_node_id # Tag assignment with its source
+            required_assignments.append(assignment)
+        del node_results['property_assignments']
+
+    if 'declarations' in node_results:
+        if 'derive_datablock' in node_results['declarations']:
+            decl = node_results['declarations']['derive_datablock']
+            creation_declarations[decl['derived_uuid']] = {
+                'type': 'DERIVE',
+                'source_uuid': decl['source_uuid'],
+                'new_name': decl['new_name']
+            }
+            required_uuids.add(decl['derived_uuid'])
+        elif 'load_file' in node_results['declarations']:
+            decl = node_results['declarations']['load_file']
+            load_file_declarations.append({
+                'node_id': node.fn_node_id,
+                'file_path': decl['file_path'],
+                'link_flag': decl['link_flag'],
+                'datablock_types': decl['datablock_types']
+            })
+        elif 'create_datablock' in node_results['declarations']:
+            decl = node_results['declarations']['create_datablock']
+            # For CREATE_DATABLOCK, the key in creation_declarations is the datablock's UUID
+            creation_declarations[decl['uuid']] = decl
+            required_uuids.add(decl['uuid'])
+        # Add other declaration types here as they are implemented
+        del node_results['declarations']
+
+    session_cache[node.fn_node_id] = node_results
+
+    for key, val in node_results.items():
+        # If the node output is a UUID, add it to required_uuids
+        if isinstance(val, str) and uuid_manager.is_valid_uuid(val):
+            required_uuids.add(val)
+        # If the node output is a dictionary containing a 'uuid' (like New Datablock's output)
+        elif isinstance(val, dict) and 'uuid' in val and uuid_manager.is_valid_uuid(val['uuid']):
+            required_uuids.add(val['uuid'])
+            # Also store this declaration in creation_declarations if it's not already there
+            # This is important for nodes like New Datablock where the output *is* the creation declaration
+            if val['uuid'] not in creation_declarations:
+                creation_declarations[val['uuid']] = val
+        # Handle cases where nodes might still output bpy.types.ID directly (to be refactored)
+        elif isinstance(val, bpy.types.ID):
+            required_uuids.add(uuid_manager.get_or_create_uuid(val))
+        elif isinstance(val, list):
+            for item in val:
+                if isinstance(item, str) and uuid_manager.is_valid_uuid(item):
+                    required_uuids.add(item)
+                elif isinstance(item, dict) and 'uuid' in item and uuid_manager.is_valid_uuid(item['uuid']):
+                    required_uuids.add(item['uuid'])
+                    if item['uuid'] not in creation_declarations:
+                        creation_declarations[item['uuid']] = item
+                elif isinstance(item, bpy.types.ID):
+                    required_uuids.add(uuid_manager.get_or_create_uuid(item))
+
+    return node_results
+
+def _link_relationship(rel_tuple):
+    source_uuid, target_uuid, rel_type = rel_tuple
+    source_db = uuid_manager.find_datablock_by_uuid(source_uuid)
+    target_db = uuid_manager.find_datablock_by_uuid(target_uuid)
+
+    if not source_db or not target_db: return
+    try:
+        if rel_type == 'COLLECTION_OBJECT_LINK' and source_db.name not in target_db.objects:
+            target_db.objects.link(source_db)
+        elif rel_type == 'COLLECTION_CHILD_LINK' and source_db.name not in target_db.children:
+            target_db.children.link(source_db)
+        elif rel_type == 'OBJECT_SCENE_LINK' and isinstance(target_db, bpy.types.Scene) and source_db.name not in target_db.collection.objects:
+            target_db.collection.objects.link(source_db)
+        elif rel_type == 'COLLECTION_SCENE_LINK' and isinstance(target_db, bpy.types.Scene) and source_db.name not in target_db.collection.children:
+            target_db.collection.children.link(source_db)
+    except (RuntimeError, ReferenceError) as e:
+        print(f"  - Warning: Failed to link relationship {rel_tuple}: {e}")
+
+def _unlink_relationship(rel_tuple):
+    source_uuid, target_uuid, rel_type = rel_tuple
+    source_db = uuid_manager.find_datablock_by_uuid(source_uuid)
+    target_db = uuid_manager.find_datablock_by_uuid(target_uuid)
+
+    if not source_db or not target_db: return
+    try:
+        if rel_type == 'COLLECTION_OBJECT_LINK' and source_db.name in target_db.objects:
+            target_db.objects.unlink(source_db)
+        elif rel_type == 'COLLECTION_CHILD_LINK' and source_db.name in target_db.children:
+            target_db.children.unlink(source_db)
+        elif rel_type == 'OBJECT_SCENE_LINK' and isinstance(target_db, bpy.types.Scene) and source_db.name in target_db.collection.objects:
+            target_db.collection.objects.unlink(source_db)
+        elif rel_type == 'COLLECTION_SCENE_LINK' and isinstance(target_db, bpy.types.Scene) and source_db.name in target_db.collection.children:
+            target_db.collection.children.unlink(source_db)
+    except (RuntimeError, ReferenceError) as e:
+        print(f"  - Warning: Failed to unlink relationship {rel_tuple}: {e}")
+
+def _cleanup_state_map(tree, existing_node_ids):
+    for i in range(len(tree.fn_state_map) - 1, -1, -1):
+        if tree.fn_state_map[i].node_id.split(':')[0] not in existing_node_ids:
+            tree.fn_state_map.remove(i)
+
+def _trace_active_path(current_socket, session_cache):
+    if not current_socket or current_socket.is_active:
+        return
+    current_socket.is_active = True
+    for input_socket in current_socket.node.inputs:
+        if input_socket.is_linked:
+            _trace_active_path(input_socket.links[0].from_socket, session_cache)
+
+def _get_managed_datablocks_in_scene() -> dict:
+    managed_datablocks = {}
+    collections = [bpy.data.objects, bpy.data.scenes, bpy.data.collections, bpy.data.meshes, bpy.data.materials, bpy.data.images, bpy.data.lights, bpy.data.cameras, bpy.data.worlds, bpy.data.node_groups, bpy.data.texts, bpy.data.actions, bpy.data.armatures]
+    for collection in collections:
+        for db in collection:
+            if db.get(uuid_manager.FN_UUID_PROPERTY):
+                managed_datablocks[db[uuid_manager.FN_UUID_PROPERTY]] = db
+    return managed_datablocks
+
+def _topological_sort_creation_declarations(creation_declarations):
+    graph = {}
+    in_degree = {}
+    
+    # Initialize graph and in-degrees
+    for uuid, decl in creation_declarations.items():
+        graph[uuid] = []
+        in_degree[uuid] = 0
+
+    # Build graph and calculate in-degrees
+    for uuid, decl in creation_declarations.items():
+        if decl['type'] == 'DERIVE' or decl['type'] == 'COPY':
+            source_uuid = decl['source_uuid']
+            if source_uuid in graph: # Ensure source is also a declared datablock in this batch
+                graph[source_uuid].append(uuid)
+                in_degree[uuid] += 1
+            # else: source_uuid is not part of the current creation batch, assume it exists already
+
+    # Kahn's algorithm for topological sort
+    queue = [uuid for uuid, degree in in_degree.items() if degree == 0]
+    sorted_uuids = []
+
+    while queue:
+        current_uuid = queue.pop(0)
+        sorted_uuids.append(current_uuid)
+
+        for neighbor_uuid in graph[current_uuid]:
+            in_degree[neighbor_uuid] -= 1
+            if in_degree[neighbor_uuid] == 0:
+                queue.append(neighbor_uuid)
+
+    if len(sorted_uuids) != len(creation_declarations):
+        print("[FN_WARNING] Cyclic dependency detected or some datablocks could not be sorted. Returning unsorted keys.")
+        return list(creation_declarations.keys()) # Fallback to unsorted keys
+
+    return sorted_uuids
+
+
+def evaluate_node_for_output(tree, target_node):
+    """
+    Evaluates the necessary part of the tree to get the inputs for a specific node,
+    without triggering a full depsgraph update.
+    """
+    session_cache = {}
+    required_uuids = set()
+    required_relationships = []
+    required_states = {}
+    required_assignments = []
+    creation_declarations = {}
+    load_file_declarations = []
+
+    # We don't need the full recursive evaluation here, just the inputs for the target_node
+    kwargs = {'tree': tree}
+    datablocks_to_write = set()
+
+    for input_socket in target_node.inputs:
+        if input_socket.is_linked:
+            link = input_socket.links[0]
+            # Evaluate the upstream node that provides the input
+            upstream_results = _evaluate_node(tree, link.from_node, session_cache, required_uuids, required_relationships, required_states, required_assignments, creation_declarations, load_file_declarations)
+            value_from_upstream = upstream_results.get(link.from_socket.identifier)
+            
+            # Find the actual datablock from the UUID
+            if uuid_manager.is_valid_uuid(value_from_upstream):
+                db = uuid_manager.find_datablock_by_uuid(value_from_upstream)
+                if db:
+                    datablocks_to_write.add(db)
+                kwargs[input_socket.identifier] = db
+            elif isinstance(value_from_upstream, list):
+                # Handle lists of UUIDs
+                resolved_list = []
+                for item in value_from_upstream:
+                    if uuid_manager.is_valid_uuid(item):
+                        db = uuid_manager.find_datablock_by_uuid(item)
+                        if db:
+                            datablocks_to_write.add(db)
+                            resolved_list.append(db)
+                kwargs[input_socket.identifier] = resolved_list
+            else:
+                kwargs[input_socket.identifier] = value_from_upstream
+        else:
+            kwargs[input_socket.identifier] = getattr(input_socket, 'default_value', None)
+
+    return {"inputs": kwargs, "datablocks": datablocks_to_write}
+
+
+def register():
+    bpy.app.handlers.depsgraph_update_post.append(datablock_nodes_depsgraph_handler)
+
+def unregister():
+    # Find the handler and remove it
+    for handler in bpy.app.handlers.depsgraph_update_post:
+        if handler.__name__ == "datablock_nodes_depsgraph_handler":
+            bpy.app.handlers.depsgraph_update_post.remove(handler)
+            break

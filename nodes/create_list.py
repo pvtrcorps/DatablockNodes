@@ -10,6 +10,9 @@ from ..sockets import (
     FNSocketMeshList, FNSocketNodeTreeList, FNSocketTextList, FNSocketWorkSpaceList
 )
 
+def _update_node(self, context):
+    self.update_sockets(context)
+
 class FN_create_list(FNBaseNode, bpy.types.Node):
     bl_idname = "FN_create_list"
     bl_label = "Create List"
@@ -32,14 +35,14 @@ class FN_create_list(FNBaseNode, bpy.types.Node):
             ('STRING', 'String', ''),
         ],
         default='SCENE',
-        update=lambda self, context: self.update_sockets(context)
+        update=_update_node
     )
 
     item_count: bpy.props.IntProperty(
         name="Items",
         default=2,
         min=0,
-        update=lambda self, context: self.update_sockets(context)
+        update=_update_node
     )
 
     def init(self, context):
@@ -99,10 +102,7 @@ class FN_create_list(FNBaseNode, bpy.types.Node):
             new_output_socket = self.outputs.new(list_socket_type, "List")
             new_output_socket.display_shape = 'SQUARE'
 
-    def update_hash(self, hasher):
-        super().update_hash(hasher)
-        hasher.update(self.datablock_type.encode())
-        hasher.update(str(self.item_count).encode())
+    
 
     def draw_buttons(self, context, layout):
         layout.prop(self, "datablock_type", text="Type")

@@ -13,6 +13,9 @@ _value_socket_map = {
     'COLOR': 'FNSocketColor',
 }
 
+def _update_node(self, context):
+    self.update_sockets(context)
+
 class FN_new_value(FNBaseNode, bpy.types.Node):
     bl_idname = "FN_new_value"
     bl_label = "New Value"
@@ -28,7 +31,7 @@ class FN_new_value(FNBaseNode, bpy.types.Node):
             ('COLOR', 'Color', ''),
         ],
         default='STRING',
-        update=lambda self, context: self.update_sockets(context)
+        update=_update_node
     )
 
     # Properties for different value types
@@ -71,22 +74,7 @@ class FN_new_value(FNBaseNode, bpy.types.Node):
         elif self.value_type == 'COLOR':
             layout.prop(self, "color_value")
 
-    def update_hash(self, hasher):
-        super().update_hash(hasher)
-        # Add the node's internal properties to the hash
-        hasher.update(self.value_type.encode())
-        if self.value_type == 'BOOLEAN':
-            hasher.update(str(self.bool_value).encode())
-        elif self.value_type == 'FLOAT':
-            hasher.update(str(self.float_value).encode())
-        elif self.value_type == 'INTEGER':
-            hasher.update(str(self.int_value).encode())
-        elif self.value_type == 'STRING':
-            hasher.update(self.string_value.encode())
-        elif self.value_type == 'VECTOR':
-            hasher.update(str(self.vector_value[:]).encode())
-        elif self.value_type == 'COLOR':
-            hasher.update(str(self.color_value[:]).encode())
+    
 
     def execute(self, **kwargs):
         # Return the appropriate value based on selected type

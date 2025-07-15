@@ -5,6 +5,9 @@ from ..sockets import (
     FNSocketString
 )
 
+def _update_node(self, context):
+    self.update_sockets(context)
+
 class FN_value_to_string(FNBaseNode, bpy.types.Node):
     bl_idname = "FN_value_to_string"
     bl_label = "Value to String"
@@ -19,7 +22,7 @@ class FN_value_to_string(FNBaseNode, bpy.types.Node):
             ('COLOR', 'Color', ''),
         ],
         default='BOOLEAN',
-        update=lambda self, context: self.update_sockets(context)
+        update=_update_node
     )
 
     def init(self, context):
@@ -47,9 +50,7 @@ class FN_value_to_string(FNBaseNode, bpy.types.Node):
         # Add output string socket
         self.outputs.new('FNSocketString', "String")
 
-    def update_hash(self, hasher):
-        super().update_hash(hasher)
-        hasher.update(self.value_type.encode())
+    
 
     def draw_buttons(self, context, layout):
         layout.prop(self, "value_type", text="Type")

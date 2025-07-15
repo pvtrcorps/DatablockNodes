@@ -34,11 +34,11 @@ class FN_OT_activate_socket(bpy.types.Operator):
         # Set the target as the new final active socket
         target_socket.is_final_active = True
 
-        # Now, call the reconciler to perform the sync. 
-        # This will handle setting the is_active flags correctly for the UI.
-        reconciler.sync_active_socket(node_tree, target_socket)
+        # Explicitly trigger the main execution function from the reconciler.
+        # This ensures immediate feedback from the user's action.
+        reconciler.trigger_execution(node_tree)
         
-        self.report({'INFO'}, f"Activated and synced from {target_node.name}.{target_socket.name}")
+        self.report({'INFO'}, f"Set {target_node.name}.{target_socket.name} as active output and triggered sync.")
 
         return {'FINISHED'}
 
@@ -83,60 +83,12 @@ class FN_OT_write_file(bpy.types.Operator):
 
         return {'FINISHED'}
 
-class FN_OT_add_property_to_set(bpy.types.Operator):
-    """Adds a property to the Set Datablock Properties node."""
-    bl_idname = "fn.add_property_to_set"
-    bl_label = "Add Property"
 
-    node_id: bpy.props.StringProperty()
-    datablock_type: bpy.props.StringProperty()
-    is_cycles_property: bpy.props.BoolProperty(default=False)
-
-    def execute(self, context):
-        node_tree = context.space_data.edit_tree
-        node = next((n for n in node_tree.nodes if n.fn_node_id == self.node_id), None)
-
-        if not node:
-            self.report({'ERROR'}, "Node not found.")
-            return {'CANCELLED'}
-
-        prop_item = node.properties_to_set.add()
-        prop_item.name = "New Property"
-        # Default socket type, will be updated when rna_path is set
-        prop_item.socket_type = "STRING"
-
-        # Force update sockets to reflect the new property
-        node.update_sockets(context)
-        return {'FINISHED'}
-
-class FN_OT_remove_property_from_set(bpy.types.Operator):
-    """Removes a property from the Set Datablock Properties node."""
-    bl_idname = "fn.remove_property_from_set"
-    bl_label = "Remove Property"
-
-    node_id: bpy.props.StringProperty()
-    property_index: bpy.props.IntProperty()
-
-    def execute(self, context):
-        node_tree = context.space_data.edit_tree
-        node = next((n for n in node_tree.nodes if n.fn_node_id == self.node_id), None)
-
-        if not node:
-            self.report({'ERROR'}, "Node not found.")
-            return {'CANCELLED'}
-
-        node.properties_to_set.remove(self.property_index)
-
-        # Force update sockets to reflect the removed property
-        node.update_sockets(context)
-        return {'FINISHED'}
 
 
 _all_operators = (
     FN_OT_activate_socket,
     FN_OT_write_file,
-    FN_OT_add_property_to_set,
-    FN_OT_remove_property_from_set,
 )
 
 def register():

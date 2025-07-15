@@ -11,6 +11,10 @@ from ..sockets import (
 )
 from .. import uuid_manager
 
+def _update_node(self, context):
+    self.update_sockets(context)
+    self._trigger_update(context)
+
 class FN_switch(FNBaseNode, bpy.types.Node):
     bl_idname = "FN_switch"
     bl_label = "Switch"
@@ -22,7 +26,7 @@ class FN_switch(FNBaseNode, bpy.types.Node):
             ('INDEX', 'Index', 'Switch based on an integer index'),
         ],
         default='BOOLEAN',
-        update=lambda self, context: (self.update_sockets(context), self._trigger_update(context))
+        update=_update_node
     )
 
     data_type: bpy.props.EnumProperty(
@@ -61,14 +65,14 @@ class FN_switch(FNBaseNode, bpy.types.Node):
             ('WORKSPACE_LIST', 'WorkSpace List', ''),
         ],
         default='SCENE',
-        update=lambda self, context: (self.update_sockets(context), self._trigger_update(context))
+        update=_update_node
     )
 
     item_count: bpy.props.IntProperty(
         name="Items",
         default=2,
         min=0,
-        update=lambda self, context: (self.update_sockets(context), self._trigger_update(context))
+        update=_update_node
     )
 
     def init(self, context):
@@ -148,12 +152,7 @@ class FN_switch(FNBaseNode, bpy.types.Node):
             if self.data_type.endswith('_LIST'):
                 new_output_socket.display_shape = 'SQUARE'
 
-    def update_hash(self, hasher):
-        super().update_hash(hasher)
-        hasher.update(self.switch_type.encode())
-        hasher.update(self.data_type.encode())
-        if self.switch_type == 'INDEX':
-            hasher.update(str(self.item_count).encode())
+    
 
     def draw_buttons(self, context, layout):
         layout.prop(self, "switch_type", text="Type")

@@ -70,7 +70,8 @@ class FN_derive_datablock(FNBaseNode, bpy.types.Node):
 
         socket_type = _datablock_socket_map.get(self.datablock_type)
         if socket_type:
-            self.inputs.new(socket_type, "Source")
+            source_socket = self.inputs.new(socket_type, "Source")
+            source_socket.is_mutable = False # Set to False to prevent implicit copying
             self.outputs.new(socket_type, "Derived")
         
         self.inputs.new('FNSocketString', "Name")
@@ -78,59 +79,36 @@ class FN_derive_datablock(FNBaseNode, bpy.types.Node):
     def draw_buttons(self, context, layout):
         layout.prop(self, "datablock_type", text="Type")
 
-    def update_hash(self, hasher):
-        pass # No internal properties that affect the output
+    
 
     def execute(self, **kwargs):
-        tree = kwargs.get('tree')
-        source_datablock = kwargs.get(self.inputs['Source'].identifier)
+        source_uuid = kwargs.get(self.inputs['Source'].identifier)
         new_name = kwargs.get(self.inputs['Name'].identifier)
+        print(f"[FN_DEBUG] Derive Datablock: Received source_uuid = {source_uuid} (Type: {type(source_uuid).__name__})")
 
-        if not source_datablock:
-            # Clear the state if the source is disconnected
-            map_item = next((item for item in tree.fn_state_map if item.node_id == self.fn_node_id), None)
-            if map_item:
-                map_item.datablock_uuids = ""
-            return {}
+        if not source_uuid:
+            # If no source, declare an empty state for this node's output
+            return {self.outputs['Derived'].identifier: None, 'states': {self.fn_node_id: ""}}
 
-        output_socket_identifier = self.outputs['Derived'].identifier
-        map_item = next((item for item in tree.fn_state_map if item.node_id == self.fn_node_id), None)
+        # Generate a new UUID for the derived datablock.
+        # The reconciler will handle the actual copying and naming.
+        derived_uuid = uuid_manager.generate_uuid()
 
-        managed_copy = None
-        previous_source_uuid = None
-
-        if map_item and map_item.datablock_uuids:
-            uuids = map_item.datablock_uuids.split(',')
-            if len(uuids) == 2:
-                previous_source_uuid = uuids[0]
-                managed_copy = uuid_manager.find_datablock_by_uuid(uuids[1])
-
-        current_source_uuid = uuid_manager.get_or_create_uuid(source_datablock)
-
-        should_create_new_copy = not managed_copy or current_source_uuid != previous_source_uuid
-
-        if should_create_new_copy:
-            print(f"[Derive Node] Source changed or no copy exists. Deriving new copy from '{source_datablock.name}'.")
-            new_copy = source_datablock.copy()
-            uuid_manager.set_uuid(new_copy, force_new=True)
-            new_copy_uuid = uuid_manager.get_uuid(new_copy)
-
-            if new_name:
-                new_copy.name = new_name
-            
-            if not map_item:
-                map_item = tree.fn_state_map.add()
-                map_item.node_id = self.fn_node_id
-            
-            map_item.datablock_uuids = f"{current_source_uuid},{new_copy_uuid}"
-            
-            return {output_socket_identifier: new_copy}
-        else:
-            print(f"[Derive Node] Reusing existing managed copy '{managed_copy.name}'.")
-            if new_name and managed_copy.name != new_name:
-                managed_copy.name = new_name
-            
-            return {output_socket_identifier: managed_copy}
+        # Declare the intention to derive a datablock
+        # The reconciler will use this to manage the actual Blender datablocks
+        return {
+            self.outputs['Derived'].identifier: derived_uuid,
+            'declarations': {
+                'derive_datablock': {
+                    'source_uuid': source_uuid,
+                    'derived_uuid': derived_uuid,
+                    'new_name': new_name
+                }
+            },
+            'states': {
+                self.fn_node_id: f"{source_uuid},{derived_uuid}"
+            }
+        }
 
 
 
