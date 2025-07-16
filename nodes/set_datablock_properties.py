@@ -1,4 +1,3 @@
-
 import bpy
 import json
 from ..nodes.base import FNBaseNode
@@ -8,7 +7,8 @@ from ..sockets import (
     FNSocketImage, FNSocketLight, FNSocketMaterial, FNSocketMesh, FNSocketNodeTree,
     FNSocketText, FNSocketWorkSpace, FNSocketWorld, FNSocketArmature, FNSocketAction
 )
-from ..properties import FNPropertyItem, _datablock_socket_map, FNRnaPropertyItem
+from ..properties import FNPropertyItem, FNRnaPropertyItem
+from .constants import DATABLOCK_TYPES, DATABLOCK_SOCKET_MAP
 
 # --- Mappings and Helpers ---
 
@@ -109,13 +109,7 @@ class FN_set_datablock_properties(FNBaseNode, bpy.types.Node):
 
     datablock_type: bpy.props.EnumProperty(
         name="Datablock Type",
-        items=[
-            ('OBJECT', 'Object', ''), ('SCENE', 'Scene', ''), ('COLLECTION', 'Collection', ''),
-            ('MATERIAL', 'Material', ''), ('MESH', 'Mesh', ''), ('LIGHT', 'Light', ''),
-            ('CAMERA', 'Camera', ''), ('IMAGE', 'Image', ''), ('NODETREE', 'Node Tree', ''),
-            ('TEXT', 'Text', ''), ('WORLD', 'World', ''), ('WORKSPACE', 'WorkSpace', ''),
-            ('ARMATURE', 'Armature', ''), ('ACTION', 'Action', ''),
-        ],
+        items=DATABLOCK_TYPES,
         default='OBJECT',
         update=_update_node
     )
@@ -152,7 +146,7 @@ class FN_set_datablock_properties(FNBaseNode, bpy.types.Node):
         for socket in list(self.inputs):
             if socket.name != "Target": self.inputs.remove(socket)
         
-        main_socket_type = _datablock_socket_map.get(self.datablock_type, 'FNSocketObject')
+        main_socket_type = DATABLOCK_SOCKET_MAP.get(self.datablock_type, 'FNSocketObject')
         if "Target" not in self.inputs or self.inputs["Target"].bl_idname != main_socket_type:
             if "Target" in self.inputs: self.inputs.remove(self.inputs["Target"])
             if "Target" in self.outputs: self.outputs.remove(self.outputs["Target"])

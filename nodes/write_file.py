@@ -7,23 +7,13 @@ from ..sockets import (
     FNSocketMeshList, FNSocketNodeTreeList, FNSocketTextList, FNSocketWorkSpaceList,
     FNSocketStringList, FNSocketViewLayerList
 )
+from .constants import DATABLOCK_TYPES
 
 # Define which datablock types the node will handle and their corresponding socket types
 _datablock_types_to_write = {
-    'objects': 'FNSocketObjectList',
-    'collections': 'FNSocketCollectionList',
-    'scenes': 'FNSocketSceneList',
-    'materials': 'FNSocketMaterialList',
-    'meshes': 'FNSocketMeshList',
-    'lights': 'FNSocketLightList',
-    'cameras': 'FNSocketCameraList',
-    'images': 'FNSocketImageList',
-    'node_groups': 'FNSocketNodeTreeList',
-    'texts': 'FNSocketTextList',
-    'worlds': 'FNSocketWorldList',
-    'workspaces': 'FNSocketWorkSpaceList',
-    # Add more as needed from bpy.data
+    item[0].lower() + 's': f"FNSocket{item[0].capitalize()}List" for item in DATABLOCK_TYPES
 }
+
 
 class FN_write_file(FNBaseNode, bpy.types.Node):
     bl_idname = "FN_write_file"
@@ -49,13 +39,37 @@ class FN_write_file(FNBaseNode, bpy.types.Node):
             input_socket.display_shape = 'SQUARE' # Ensure list sockets are square
 
     def draw_buttons(self, context, layout):
-        # This node has a custom operator button, not the standard activate button
-        op = layout.operator("fn.write_file", text="WRITE")
-        op.node_id = self.fn_node_id
-        # Properties are now inputs, so no need to draw them here directly
-        # layout.prop(self, "file_path")
-        # layout.prop(self, "overwrite")
+        pass
 
     def execute(self, **kwargs):
-        # The core logic is in the operator, not here.
-        pass
+        file_path = kwargs.get(self.inputs['File Path'].identifier)
+        overwrite = kwargs.get(self.inputs['Overwrite'].identifier)
+
+        if not file_path:
+            return {}
+
+        datablock_uuids_to_write = set()
+        for db_type_name in _datablock_types_to_write.keys():
+            socket_name = db_type_name.capitalize()
+            if socket_name in self.inputs:
+                db_list = kwargs.get(self.inputs[socket_name].identifier)
+                if db_list and isinstance(db_list, list):
+                    for db_uuid in db_list:
+                        if db_uuid:
+                            datablock_uuids_to_write.add(db_uuid)
+
+        return {
+            'declarations': {
+                'write_file': {
+                    'file_path': file_path,
+                    'overwrite': overwrite,
+                    'datablock_uuids': list(datablock_uuids_to_write)
+                }
+            }
+        }
+
+def register():
+    bpy.utils.register_class(FN_write_file)
+
+def unregister():
+    bpy.utils.unregister_class(FN_write_file)

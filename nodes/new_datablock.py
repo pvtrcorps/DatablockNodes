@@ -7,8 +7,9 @@ from ..sockets import (
     FNSocketText, FNSocketWorkSpace, FNSocketWorld
 )
 from .. import uuid_manager
-from ..properties import _datablock_socket_map, _datablock_creation_map
+from ..properties import _datablock_creation_map
 from .. import logger
+from .constants import DATABLOCK_TYPES, DATABLOCK_SOCKET_MAP
 
 def _update_node(self, context):
     self.update_sockets(context)
@@ -20,22 +21,7 @@ class FN_new_datablock(FNBaseNode, bpy.types.Node):
 
     datablock_type: bpy.props.EnumProperty(
         name="Type",
-        items=[
-            ('SCENE', 'Scene', ''),
-            ('OBJECT', 'Object', ''),
-            ('COLLECTION', 'Collection', ''),
-            ('CAMERA', 'Camera', ''),
-            ('IMAGE', 'Image', ''),
-            ('LIGHT', 'Light', ''),
-            ('MATERIAL', 'Material', ''),
-            ('MESH', 'Mesh', ''),
-            ('NODETREE', 'Node Tree', ''),
-            ('TEXT', 'Text', ''),
-            ('WORKSPACE', 'WorkSpace', ''),
-            ('WORLD', 'World', ''),
-            ('ARMATURE', 'Armature', ''),
-            ('ACTION', 'Action', ''),
-        ],
+        items=DATABLOCK_TYPES,
         default='SCENE',
         update=_update_node
     )
@@ -76,7 +62,7 @@ class FN_new_datablock(FNBaseNode, bpy.types.Node):
             pass # No special input sockets for light creation yet
 
         # Add main output socket based on selected type
-        socket_type = _datablock_socket_map.get(self.datablock_type)
+        socket_type = DATABLOCK_SOCKET_MAP.get(self.datablock_type)
         if socket_type:
             self.outputs.new(socket_type, self.datablock_type.capitalize())
 

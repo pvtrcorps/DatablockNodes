@@ -9,6 +9,7 @@ from ..sockets import (
     FNSocketCameraList, FNSocketImageList, FNSocketLightList, FNSocketMaterialList,
     FNSocketMeshList, FNSocketNodeTreeList, FNSocketTextList, FNSocketWorkSpaceList
 )
+from .constants import DATABLOCK_TYPES, DATABLOCK_SOCKET_MAP
 
 def _update_node(self, context):
     self.update_sockets(context)
@@ -19,21 +20,7 @@ class FN_create_list(FNBaseNode, bpy.types.Node):
 
     datablock_type: bpy.props.EnumProperty(
         name="Type",
-        items=[
-            ('SCENE', 'Scene', ''),
-            ('OBJECT', 'Object', ''),
-            ('COLLECTION', 'Collection', ''),
-            ('CAMERA', 'Camera', ''),
-            ('IMAGE', 'Image', ''),
-            ('LIGHT', 'Light', ''),
-            ('MATERIAL', 'Material', ''),
-            ('MESH', 'Mesh', ''),
-            ('NODETREE', 'Node Tree', ''),
-            ('TEXT', 'Text', ''),
-            ('WORKSPACE', 'WorkSpace', ''),
-            ('WORLD', 'World', ''),
-            ('STRING', 'String', ''),
-        ],
+        items=DATABLOCK_TYPES + [('STRING', 'String', '')],
         default='SCENE',
         update=_update_node
     )

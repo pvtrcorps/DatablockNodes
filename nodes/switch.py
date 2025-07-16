@@ -161,8 +161,8 @@ class FN_switch(FNBaseNode, bpy.types.Node):
             layout.prop(self, "item_count", text="Items")
 
     def execute(self, **kwargs):
-        # With the new reconciler logic, the execute function is greatly simplified.
-        # The reconciler evaluates the active branch and passes the result directly.
-        # This node's job is just to pass that result to its output.
-        output_value = kwargs.get(self.outputs[0].identifier)
-        return {self.outputs[0].identifier: output_value}
+        # The reconciler now handles the conditional evaluation.
+        # This node's execute function is now passive and simply passes through the value
+        # that the reconciler has already determined from the active branch.
+        # The value is passed in kwargs, keyed by the output socket's identifier.
+        return {self.outputs[0].identifier: kwargs.get(self.outputs[0].identifier)}

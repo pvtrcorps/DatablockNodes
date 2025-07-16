@@ -2,6 +2,7 @@ import bpy
 import hashlib
 import json
 import mathutils
+import os
 from bpy.types import bpy_prop_array
 from bpy.app.handlers import persistent
 from . import uuid_manager
@@ -89,7 +90,7 @@ def trigger_execution(tree: bpy.types.NodeTree):
 
     # 3. Evaluate the active branch to get the execution plan.
     logger.log("[FN_DEBUG] Evaluating active branch...")
-    session_cache, active_uuids, active_states, active_relationships, active_assignments, creation_declarations, load_file_declarations = _evaluate_active_branch(tree, active_socket, active_branch_nodes)
+    session_cache, active_uuids, active_states, active_relationships, active_assignments, creation_declarations, load_file_declarations, write_file_declarations = _evaluate_active_branch(tree, active_socket, active_branch_nodes)
     logger.log(f"[FN_DEBUG] Active plan built. UUIDs: {active_uuids}")
 
     # Process LOAD_FILE declarations before synchronization
@@ -129,8 +130,42 @@ def trigger_execution(tree: bpy.types.NodeTree):
     # 4. Synchronize Blender's state with the active plan.
     _synchronize_blender_state(tree, active_uuids, active_states, active_relationships, active_assignments, creation_declarations)
 
-    # 5. Update UI to highlight the active path.
+    # 5. Process WRITE_FILE declarations after synchronization
+    _process_write_file_declarations(write_file_declarations)
+
+    # 6. Update UI to highlight the active path.
     update_ui_for_active_socket(tree, active_socket, session_cache)
+
+
+def _process_write_file_declarations(declarations):
+    for decl in declarations:
+        file_path = decl['file_path']
+        overwrite = decl['overwrite']
+        datablock_uuids = decl['datablock_uuids']
+
+        if not file_path:
+            logger.log("[FN_write_file] Error: File path is not specified in declaration.")
+            continue
+
+        if os.path.exists(file_path) and not overwrite:
+            logger.log(f"[FN_write_file] Error: File '{file_path}' already exists and overwrite is False.")
+            continue
+
+        datablocks_to_write = set()
+        for uuid in datablock_uuids:
+            db = uuid_manager.find_datablock_by_uuid(uuid)
+            if db:
+                datablocks_to_write.add(db)
+
+        if not datablocks_to_write:
+            logger.log("[FN_write_file] Warning: No valid datablocks found to write.")
+            continue
+
+        try:
+            bpy.data.libraries.write(file_path, datablocks_to_write, fake_user=True, compress=True)
+            logger.log(f"[FN_write_file] Successfully wrote {len(datablocks_to_write)} datablocks to {file_path}")
+        except Exception as e:
+            logger.log(f"[FN_write_file] Error: Failed to write file: {e}")
 
 
 def _serialize_overrides(datablock) -> str:
@@ -277,12 +312,13 @@ def _evaluate_active_branch(tree: bpy.types.NodeTree, active_socket: bpy.types.N
     active_assignments = []
     creation_declarations = {}
     load_file_declarations = [] # New: Collects load file intents
+    write_file_declarations = [] # New: Collects write file intents
 
     # We start the recursive evaluation from the final active node.
     # The recursive function `_evaluate_node` will handle the dependency chain.
-    _evaluate_node(tree, active_socket.node, session_cache, active_uuids, active_relationships, active_states, active_assignments, creation_declarations, load_file_declarations)
+    _evaluate_node(tree, active_socket.node, session_cache, active_uuids, active_relationships, active_states, active_assignments, creation_declarations, load_file_declarations, write_file_declarations)
 
-    return session_cache, active_uuids, active_states, active_relationships, active_assignments, creation_declarations, load_file_declarations
+    return session_cache, active_uuids, active_states, active_relationships, active_assignments, creation_declarations, load_file_declarations, write_file_declarations
 
 
 def _synchronize_blender_state(tree, active_uuids, active_states, active_relationships, active_assignments, creation_declarations):
@@ -557,18 +593,71 @@ def update_ui_for_active_socket(tree: bpy.types.NodeTree, active_socket: bpy.typ
         logger.log(f"[FN_DEBUG] update_ui_for_active_socket: Setting bpy.context.window.scene to {final_output_val.name}")
         bpy.context.window.scene = final_output_val
 
-def _evaluate_node(tree, node, session_cache, required_uuids, required_relationships, required_states, required_assignments, creation_declarations, load_file_declarations):
+def _evaluate_node(tree, node, session_cache, required_uuids, required_relationships, required_states, required_assignments, creation_declarations, load_file_declarations, write_file_declarations):
     """
     Recursively evaluates a node, populating the required state declarations.
+    Includes special handling for Switch nodes to prevent eager evaluation of all branches.
     """
     if node.fn_node_id in session_cache:
         return session_cache[node.fn_node_id]
 
+    # --- Special Handling for Switch Node ---
+    if node.bl_idname == "FN_switch":
+        output_socket_id = node.outputs[0].identifier
+        selected_input_socket = None
+
+        if node.switch_type == 'BOOLEAN':
+            # 1. Evaluate the control socket first
+            control_socket = node.inputs['Switch']
+            switch_value = False # Default value
+            if control_socket.is_linked:
+                link = control_socket.links[0]
+                upstream_results = _evaluate_node(tree, link.from_node, session_cache, required_uuids, required_relationships, required_states, required_assignments, creation_declarations, load_file_declarations, write_file_declarations)
+                switch_value = upstream_results.get(link.from_socket.identifier, False)
+            else:
+                switch_value = control_socket.default_value
+
+            # 2. Determine the selected data socket
+            selected_input_socket = node.inputs['True'] if switch_value else node.inputs['False']
+
+        elif node.switch_type == 'INDEX':
+            # 1. Evaluate the control socket first
+            control_socket = node.inputs['Index']
+            index_value = 0 # Default value
+            if control_socket.is_linked:
+                link = control_socket.links[0]
+                upstream_results = _evaluate_node(tree, link.from_node, session_cache, required_uuids, required_relationships, required_states, required_assignments, creation_declarations, load_file_declarations, write_file_declarations)
+                index_value = upstream_results.get(link.from_socket.identifier, 0)
+            else:
+                index_value = control_socket.default_value
+
+            # 2. Determine the selected data socket
+            if isinstance(index_value, int) and 0 <= index_value < node.item_count:
+                # Input sockets for index mode are named by their index as a string
+                input_socket_name = str(index_value)
+                if input_socket_name in node.inputs:
+                    selected_input_socket = node.inputs[input_socket_name]
+
+        # 3. Evaluate ONLY the selected branch
+        if selected_input_socket and selected_input_socket.is_linked:
+            link = selected_input_socket.links[0]
+            upstream_results = _evaluate_node(tree, link.from_node, session_cache, required_uuids, required_relationships, required_states, required_assignments, creation_declarations, load_file_declarations, write_file_declarations)
+            final_value = upstream_results.get(link.from_socket.identifier)
+        elif selected_input_socket: # Not linked, use default value
+            final_value = getattr(selected_input_socket, 'default_value', None)
+        else: # No valid input selected
+            final_value = None
+        
+        node_results = {output_socket_id: final_value}
+        session_cache[node.fn_node_id] = node_results
+        return node_results
+
+    # --- Default Evaluation for all other nodes ---
     kwargs = {'tree': tree}
     for input_socket in node.inputs:
         if input_socket.is_linked:
             link = input_socket.links[0]
-            upstream_results = _evaluate_node(tree, link.from_node, session_cache, required_uuids, required_relationships, required_states, required_assignments, creation_declarations, load_file_declarations)
+            upstream_results = _evaluate_node(tree, link.from_node, session_cache, required_uuids, required_relationships, required_states, required_assignments, creation_declarations, load_file_declarations, write_file_declarations)
             value_from_upstream = upstream_results.get(link.from_socket.identifier) if isinstance(upstream_results, dict) else None
 
             is_ramified = len(link.from_socket.links) > 1
@@ -599,7 +688,6 @@ def _evaluate_node(tree, node, session_cache, required_uuids, required_relations
                 
                 kwargs[input_socket.identifier] = value_to_pass
             else:
-                # Ensure that any bpy.types.ID is converted to its UUID before passing to the node
                 if isinstance(value_from_upstream, bpy.types.ID):
                     kwargs[input_socket.identifier] = uuid_manager.get_or_create_uuid(value_from_upstream)
                 else:
@@ -611,15 +699,15 @@ def _evaluate_node(tree, node, session_cache, required_uuids, required_relations
     if node_results is None:
         node_results = {}
 
+    # Process declarations from the node's execution result
     if 'relationships' in node_results:
         for rel_tuple in node_results['relationships']:
-            rel_dict = {
+            required_relationships.append({
                 'source_uuid': rel_tuple[0],
                 'target_uuid': rel_tuple[1],
                 'relationship_type': rel_tuple[2],
                 'source_node_id': node.fn_node_id
-            }
-            required_relationships.append(rel_dict)
+            })
         del node_results['relationships']
 
     if 'states' in node_results:
@@ -629,7 +717,7 @@ def _evaluate_node(tree, node, session_cache, required_uuids, required_relations
 
     if 'property_assignments' in node_results:
         for assignment in node_results['property_assignments']:
-            assignment['source_node_id'] = node.fn_node_id # Tag assignment with its source
+            assignment['source_node_id'] = node.fn_node_id
             required_assignments.append(assignment)
         del node_results['property_assignments']
 
@@ -652,38 +740,22 @@ def _evaluate_node(tree, node, session_cache, required_uuids, required_relations
             })
         elif 'create_datablock' in node_results['declarations']:
             decl = node_results['declarations']['create_datablock']
-            # For CREATE_DATABLOCK, the key in creation_declarations is the datablock's UUID
             creation_declarations[decl['uuid']] = decl
             required_uuids.add(decl['uuid'])
-        # Add other declaration types here as they are implemented
+        elif 'write_file' in node_results['declarations']:
+            write_file_declarations.append(node_results['declarations']['write_file'])
         del node_results['declarations']
 
     session_cache[node.fn_node_id] = node_results
 
+    # Add output UUIDs to the active set
     for key, val in node_results.items():
-        # If the node output is a UUID, add it to required_uuids
         if isinstance(val, str) and uuid_manager.is_valid_uuid(val):
             required_uuids.add(val)
-        # If the node output is a dictionary containing a 'uuid' (like New Datablock's output)
-        elif isinstance(val, dict) and 'uuid' in val and uuid_manager.is_valid_uuid(val['uuid']):
-            required_uuids.add(val['uuid'])
-            # Also store this declaration in creation_declarations if it's not already there
-            # This is important for nodes like New Datablock where the output *is* the creation declaration
-            if val['uuid'] not in creation_declarations:
-                creation_declarations[val['uuid']] = val
-        # Handle cases where nodes might still output bpy.types.ID directly (to be refactored)
-        elif isinstance(val, bpy.types.ID):
-            required_uuids.add(uuid_manager.get_or_create_uuid(val))
         elif isinstance(val, list):
             for item in val:
                 if isinstance(item, str) and uuid_manager.is_valid_uuid(item):
                     required_uuids.add(item)
-                elif isinstance(item, dict) and 'uuid' in item and uuid_manager.is_valid_uuid(item['uuid']):
-                    required_uuids.add(item['uuid'])
-                    if item['uuid'] not in creation_declarations:
-                        creation_declarations[item['uuid']] = item
-                elif isinstance(item, bpy.types.ID):
-                    required_uuids.add(uuid_manager.get_or_create_uuid(item))
 
     return node_results
 
@@ -732,9 +804,44 @@ def _trace_active_path(current_socket, session_cache):
     if not current_socket or current_socket.is_active:
         return
     current_socket.is_active = True
-    for input_socket in current_socket.node.inputs:
-        if input_socket.is_linked:
-            _trace_active_path(input_socket.links[0].from_socket, session_cache)
+
+    node = current_socket.node
+
+    # --- Special Handling for Switch Node ---
+    if node.bl_idname == "FN_switch":
+        selected_input_socket = None
+        
+        # 1. Determine which input was used based on the control value from the cache
+        if node.switch_type == 'BOOLEAN':
+            control_socket = node.inputs['Switch']
+            # Get the evaluated value from the session cache
+            switch_value = session_cache.get(control_socket.links[0].from_node.fn_node_id, {}).get(control_socket.links[0].from_socket.identifier, False) if control_socket.is_linked else control_socket.default_value
+            selected_input_socket = node.inputs['True'] if switch_value else node.inputs['False']
+            # Also trace back the control socket itself
+            if control_socket.is_linked:
+                _trace_active_path(control_socket.links[0].from_socket, session_cache)
+
+        elif node.switch_type == 'INDEX':
+            control_socket = node.inputs['Index']
+            index_value = session_cache.get(control_socket.links[0].from_node.fn_node_id, {}).get(control_socket.links[0].from_socket.identifier, 0) if control_socket.is_linked else control_socket.default_value
+            
+            if isinstance(index_value, int) and 0 <= index_value < node.item_count:
+                input_socket_name = str(index_value)
+                if input_socket_name in node.inputs:
+                    selected_input_socket = node.inputs[input_socket_name]
+            # Also trace back the control socket itself
+            if control_socket.is_linked:
+                _trace_active_path(control_socket.links[0].from_socket, session_cache)
+
+        # 2. Trace back ONLY the selected input socket
+        if selected_input_socket and selected_input_socket.is_linked:
+            _trace_active_path(selected_input_socket.links[0].from_socket, session_cache)
+
+    # --- Default tracing for all other nodes ---
+    else:
+        for input_socket in node.inputs:
+            if input_socket.is_linked:
+                _trace_active_path(input_socket.links[0].from_socket, session_cache)
 
 def _get_managed_datablocks_in_scene() -> dict:
     managed_datablocks = {}

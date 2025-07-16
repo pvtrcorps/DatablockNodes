@@ -7,21 +7,7 @@ from ..sockets import (
     FNSocketImage, FNSocketLight, FNSocketMaterial, FNSocketMesh, FNSocketNodeTree,
     FNSocketText, FNSocketWorkSpace, FNSocketWorld
 )
-
-_datablock_socket_map = {
-    'SCENE': 'FNSocketScene',
-    'OBJECT': 'FNSocketObject',
-    'COLLECTION': 'FNSocketCollection',
-    'CAMERA': 'FNSocketCamera',
-    'IMAGE': 'FNSocketImage',
-    'LIGHT': 'FNSocketLight',
-    'MATERIAL': 'FNSocketMaterial',
-    'MESH': 'FNSocketMesh',
-    'NODETREE': 'FNSocketNodeTree',
-    'TEXT': 'FNSocketText',
-    'WORKSPACE': 'FNSocketWorkSpace',
-    'WORLD': 'FNSocketWorld',
-}
+from .constants import DATABLOCK_TYPES, DATABLOCK_SOCKET_MAP
 
 def _update_node(self, context):
     self.update_sockets(context)
@@ -33,20 +19,7 @@ class FN_set_datablock_name(FNBaseNode, bpy.types.Node):
 
     datablock_type: bpy.props.EnumProperty(
         name="Type",
-        items=[
-            ('SCENE', 'Scene', ''),
-            ('OBJECT', 'Object', ''),
-            ('COLLECTION', 'Collection', ''),
-            ('CAMERA', 'Camera', ''),
-            ('IMAGE', 'Image', ''),
-            ('LIGHT', 'Light', ''),
-            ('MATERIAL', 'Material', ''),
-            ('MESH', 'Mesh', ''),
-            ('NODETREE', 'Node Tree', ''),
-            ('TEXT', 'Text', ''),
-            ('WORKSPACE', 'WorkSpace', ''),
-            ('WORLD', 'World', ''),
-        ],
+        items=DATABLOCK_TYPES,
         default='SCENE',
         update=_update_node
     )
@@ -63,14 +36,14 @@ class FN_set_datablock_name(FNBaseNode, bpy.types.Node):
             self.outputs.remove(self.outputs[-1])
 
         # Add datablock input socket
-        datablock_socket = self.inputs.new(_datablock_socket_map[self.datablock_type], self.datablock_type.capitalize())
+        datablock_socket = self.inputs.new(DATABLOCK_SOCKET_MAP[self.datablock_type], self.datablock_type.capitalize())
         datablock_socket.is_mutable = True
 
         # Add new name input socket
         self.inputs.new('FNSocketString', "New Name")
 
         # Add datablock output socket
-        self.outputs.new(_datablock_socket_map[self.datablock_type], self.datablock_type.capitalize())
+        self.outputs.new(DATABLOCK_SOCKET_MAP[self.datablock_type], self.datablock_type.capitalize())
 
     
 

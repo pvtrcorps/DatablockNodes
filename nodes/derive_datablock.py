@@ -11,23 +11,7 @@ from ..sockets import (
 )
 from .. import uuid_manager
 from .. import logger
-
-_datablock_socket_map = {
-    'SCENE': 'FNSocketScene',
-    'OBJECT': 'FNSocketObject',
-    'COLLECTION': 'FNSocketCollection',
-    'CAMERA': 'FNSocketCamera',
-    'IMAGE': 'FNSocketImage',
-    'LIGHT': 'FNSocketLight',
-    'MATERIAL': 'FNSocketMaterial',
-    'MESH': 'FNSocketMesh',
-    'NODETREE': 'FNSocketNodeTree',
-    'TEXT': 'FNSocketText',
-    'WORKSPACE': 'FNSocketWorkSpace',
-    'WORLD': 'FNSocketWorld',
-    'ARMATURE': 'FNSocketArmature',
-    'ACTION': 'FNSocketAction',
-}
+from .constants import DATABLOCK_TYPES, DATABLOCK_SOCKET_MAP
 
 def _update_node(self, context):
     self.update_sockets(context)
@@ -40,21 +24,7 @@ class FN_derive_datablock(FNBaseNode, bpy.types.Node):
 
     datablock_type: bpy.props.EnumProperty(
         name="Type",
-        items=[
-            ('SCENE', 'Scene', 'Derive a Scene'),
-            ('OBJECT', 'Object', 'Derive an Object'),
-            ('COLLECTION', 'Collection', 'Derive a Collection'),
-            ('MATERIAL', 'Material', 'Derive a Material'),
-            ('MESH', 'Mesh', 'Derive a Mesh'),
-            ('LIGHT', 'Light', 'Derive a Light'),
-            ('CAMERA', 'Camera', 'Derive a Camera'),
-            ('IMAGE', 'Image', 'Derive an Image'),
-            ('NODETREE', 'Node Tree', 'Derive a Node Tree'),
-            ('TEXT', 'Text', 'Derive a Text Block'),
-            ('WORLD', 'World', 'Derive a World'),
-            ('ARMATURE', 'Armature', 'Derive an Armature'),
-            ('ACTION', 'Action', 'Derive an Action'),
-        ],
+        items=DATABLOCK_TYPES,
         default='OBJECT',
         update=_update_node
     )
@@ -69,7 +39,7 @@ class FN_derive_datablock(FNBaseNode, bpy.types.Node):
         for socket in list(self.outputs):
             self.outputs.remove(socket)
 
-        socket_type = _datablock_socket_map.get(self.datablock_type)
+        socket_type = DATABLOCK_SOCKET_MAP.get(self.datablock_type)
         if socket_type:
             source_socket = self.inputs.new(socket_type, "Source")
             source_socket.is_mutable = False # Set to False to prevent implicit copying

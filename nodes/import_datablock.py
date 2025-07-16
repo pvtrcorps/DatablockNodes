@@ -2,21 +2,22 @@ import bpy
 from .base import FNBaseNode
 from .. import uuid_manager
 from .. import logger
+from .constants import DATABLOCK_TYPES, DATABLOCK_SOCKET_MAP
 
 # This maps the EnumProperty items to bpy.data collections and socket types
 _datablock_map = {
-    'OBJECT': ('objects', 'FNSocketObject'),
-    'SCENE': ('scenes', 'FNSocketScene'),
-    'COLLECTION': ('collections', 'FNSocketCollection'),
-    'MATERIAL': ('materials', 'FNSocketMaterial'),
-    'MESH': ('meshes', 'FNSocketMesh'),
-    'LIGHT': ('lights', 'FNSocketLight'),
-    'CAMERA': ('cameras', 'FNSocketCamera'),
-    'IMAGE': ('images', 'FNSocketImage'),
-    'NODETREE': ('node_groups', 'FNSocketNodeTree'),
-    'TEXT': ('texts', 'FNSocketText'),
-    'WORLD': ('worlds', 'FNSocketWorld'),
-    'WORKSPACE': ('workspaces', 'FNSocketWorkSpace'),
+    'OBJECT': ('objects', DATABLOCK_SOCKET_MAP['OBJECT']),
+    'SCENE': ('scenes', DATABLOCK_SOCKET_MAP['SCENE']),
+    'COLLECTION': ('collections', DATABLOCK_SOCKET_MAP['COLLECTION']),
+    'MATERIAL': ('materials', DATABLOCK_SOCKET_MAP['MATERIAL']),
+    'MESH': ('meshes', DATABLOCK_SOCKET_MAP['MESH']),
+    'LIGHT': ('lights', DATABLOCK_SOCKET_MAP['LIGHT']),
+    'CAMERA': ('cameras', DATABLOCK_SOCKET_MAP['CAMERA']),
+    'IMAGE': ('images', DATABLOCK_SOCKET_MAP['IMAGE']),
+    'NODETREE': ('node_groups', DATABLOCK_SOCKET_MAP['NODETREE']),
+    'TEXT': ('texts', DATABLOCK_SOCKET_MAP['TEXT']),
+    'WORLD': ('worlds', DATABLOCK_SOCKET_MAP['WORLD']),
+    'WORKSPACE': ('workspaces', DATABLOCK_SOCKET_MAP['WORKSPACE']),
 }
 
 def _update_node(self, context):
@@ -28,20 +29,7 @@ class FN_import_datablock(FNBaseNode, bpy.types.Node):
 
     datablock_type: bpy.props.EnumProperty(
         name="Type",
-        items=[
-            ('OBJECT', 'Object', ''),
-            ('SCENE', 'Scene', ''),
-            ('COLLECTION', 'Collection', ''),
-            ('MATERIAL', 'Material', ''),
-            ('MESH', 'Mesh', ''),
-            ('LIGHT', 'Light', ''),
-            ('CAMERA', 'Camera', ''),
-            ('IMAGE', 'Image', ''),
-            ('NODETREE', 'Node Tree', ''),
-            ('TEXT', 'Text', ''),
-            ('WORLD', 'World', ''),
-            ('WORKSPACE', 'WorkSpace', ''),
-        ],
+        items=DATABLOCK_TYPES,
         default='OBJECT',
         update=_update_node
     )

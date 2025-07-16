@@ -10,6 +10,7 @@ from ..sockets import (
     FNSocketMeshList, FNSocketNodeTreeList, FNSocketTextList, FNSocketWorkSpaceList, FNSocketStringList
 )
 from .. import logger
+from .constants import DATABLOCK_TYPES
 
 _socket_map_single = {
     'BOOLEAN': 'FNSocketBool',
@@ -62,21 +63,7 @@ class FN_get_item_from_list(FNBaseNode, bpy.types.Node):
 
     list_type: bpy.props.EnumProperty(
         name="List Type",
-        items=[
-            ('STRING', 'String', ''),
-            ('SCENE', 'Scene', ''),
-            ('OBJECT', 'Object', ''),
-            ('COLLECTION', 'Collection', ''),
-            ('WORLD', 'World', ''),
-            ('CAMERA', 'Camera', ''),
-            ('IMAGE', 'Image', ''),
-            ('LIGHT', 'Light', ''),
-            ('MATERIAL', 'Material', ''),
-            ('MESH', 'Mesh', ''),
-            ('NODETREE', 'Node Tree', ''),
-            ('TEXT', 'Text', ''),
-            ('WORKSPACE', 'WorkSpace', ''),
-        ],
+        items=DATABLOCK_TYPES + [('STRING', 'String', '')],
         default='OBJECT',
         update=_update_node
     )
