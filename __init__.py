@@ -22,7 +22,7 @@ from . import operators
 from . import sockets
 from . import properties
 from . import reconciler
-from .nodes import new_datablock, set_datablock_name, link_to_scene, create_list, new_value, link_to_collection, join_strings, split_string, value_to_string, switch, get_item_from_list, import_datablock, read_file, write_file, set_datablock_properties, set_object_data, set_scene_world, set_object_material, set_object_parent, derive_datablock, get_datablock_content
+from .nodes import new_datablock, set_datablock_name, link_to_scene, create_list, new_value, link_to_collection, join_strings, split_string, value_to_string, switch, get_item_from_list, import_datablock, read_file, write_file, set_datablock_properties, set_object_data, set_scene_world, set_object_material, set_object_parent, derive_datablock, get_datablock_content, sequence_of_actions
 from .nodes.set_datablock_properties import FN_OT_internal_add_remove_property, FN_OT_internal_reorder_property
 
 # --- State Map Item ---
@@ -107,6 +107,7 @@ node_categories = [
         NodeItem("FN_set_scene_world"),
         NodeItem("FN_set_object_material"),
         NodeItem("FN_set_object_parent"),
+        NodeItem("FN_sequence_of_actions"),
     ]),
 ]
 
@@ -140,6 +141,7 @@ classes = (
     set_scene_world.FN_set_scene_world,
     set_object_material.FN_set_object_material,
     set_object_parent.FN_set_object_parent,
+    sequence_of_actions.FN_sequence_of_actions,
     FN_OT_internal_add_remove_property,
     FN_OT_internal_reorder_property,
 )

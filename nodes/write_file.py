@@ -1,7 +1,7 @@
 import bpy
 from .base import FNBaseNode
 from ..sockets import (
-    FNSocketString, FNSocketBool,
+    FNSocketString, FNSocketBool, FNSocketPulse,
     FNSocketSceneList, FNSocketObjectList, FNSocketCollectionList, FNSocketWorldList,
     FNSocketCameraList, FNSocketImageList, FNSocketLightList, FNSocketMaterialList,
     FNSocketMeshList, FNSocketNodeTreeList, FNSocketTextList, FNSocketWorkSpaceList,
@@ -21,7 +21,7 @@ class FN_write_file(FNBaseNode, bpy.types.Node):
 
     def init(self, context):
         FNBaseNode.init(self, context)
-        self.manages_scene_datablock = False # This node performs an action, it doesn't define a scene state
+        self.manages_scene_datablock = True # This node performs an action, it doesn't define a scene state
 
         # Clear existing inputs/outputs to re-add them
         while self.inputs:
@@ -31,12 +31,14 @@ class FN_write_file(FNBaseNode, bpy.types.Node):
 
         # Add input sockets for file path and options
         self.inputs.new('FNSocketString', "File Path").subtype = 'FILE_PATH'
-        self.inputs.new('FNSocketBool', "Overwrite").default_value = False
+        self.inputs.new('FNSocketBool', "Overwrite").default_value = True
 
         # Add input sockets for all supported datablock types
         for db_type_name, socket_type_name in _datablock_types_to_write.items():
             input_socket = self.inputs.new(socket_type_name, db_type_name.capitalize())
             input_socket.display_shape = 'SQUARE' # Ensure list sockets are square
+        
+        self.outputs.new('FNSocketPulse', "Execute")
 
     def draw_buttons(self, context, layout):
         pass
@@ -52,13 +54,18 @@ class FN_write_file(FNBaseNode, bpy.types.Node):
         for db_type_name in _datablock_types_to_write.keys():
             socket_name = db_type_name.capitalize()
             if socket_name in self.inputs:
-                db_list = kwargs.get(self.inputs[socket_name].identifier)
-                if db_list and isinstance(db_list, list):
-                    for db_uuid in db_list:
+                db_input = kwargs.get(self.inputs[socket_name].identifier)
+                if db_input:
+                    # Ensure we handle both single items and lists gracefully
+                    if not isinstance(db_input, list):
+                        db_input = [db_input]
+                    
+                    for db_uuid in db_input:
                         if db_uuid:
                             datablock_uuids_to_write.add(db_uuid)
 
         return {
+            self.outputs[0].identifier: True,
             'declarations': {
                 'write_file': {
                     'file_path': file_path,

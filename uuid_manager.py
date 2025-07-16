@@ -66,6 +66,8 @@ def generate_uuid():
 
 def is_valid_uuid(uuid_string):
     """Checks if a string is a valid UUID."""
+    if not isinstance(uuid_string, str):
+        return False
     try:
         uuid.UUID(uuid_string)
         return True

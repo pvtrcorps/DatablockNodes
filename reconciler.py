@@ -7,10 +7,52 @@ from bpy.types import bpy_prop_array
 from bpy.app.handlers import persistent
 from . import uuid_manager
 from .properties import _datablock_creation_map
+from .sockets import FNSocketPulse
 from . import logger
 
 _timer_func = None
 _is_executing = False
+_last_active_datablock_socket_info = None
+
+def _reset_pulse_socket_later(node_id, socket_identifier, tree):
+    """Timer callback to reset a pulse socket and revert to the last active datablock."""
+    global _last_active_datablock_socket_info
+
+    # --- Reset the pulse socket that triggered this timer ---
+    pulse_node = next((n for n in tree.nodes if n.fn_node_id == node_id), None)
+    if pulse_node:
+        pulse_socket = pulse_node.outputs.get(socket_identifier)
+        if pulse_socket:
+            pulse_socket.is_final_active = False
+            pulse_socket.is_active = False
+
+    # --- Revert to the last known active datablock socket ---
+    if _last_active_datablock_socket_info:
+        last_node_id, last_socket_id = _last_active_datablock_socket_info
+        
+        # Find the target node and socket to reactivate
+        target_node = next((n for n in tree.nodes if n.fn_node_id == last_node_id), None)
+        if target_node:
+            target_socket = next((s for s in target_node.outputs if s.identifier == last_socket_id), None)
+            if target_socket:
+                # Deactivate all other final active sockets
+                for node in tree.nodes:
+                    for sock in node.outputs:
+                        if sock.is_final_active:
+                            sock.is_final_active = False
+                
+                # Set the target as the new final active socket
+                target_socket.is_final_active = True
+
+                # Directly trigger the execution, bypassing the context-dependent operator
+                trigger_execution(tree)
+
+    # Force a final UI update
+    for area in bpy.context.screen.areas:
+        if area.type == 'NODE_EDITOR':
+            area.tag_redraw()
+
+    return None # Unregister timer
 
 def _set_nested_property(base, path, value):
     try:
@@ -136,6 +178,20 @@ def trigger_execution(tree: bpy.types.NodeTree):
     # 6. Update UI to highlight the active path.
     update_ui_for_active_socket(tree, active_socket, session_cache)
 
+    # 7. Handle socket state post-execution
+    global _last_active_datablock_socket_info
+    if isinstance(active_socket, FNSocketPulse):
+        # Force UI update to show RECORD_ON immediately
+        for area in bpy.context.screen.areas:
+            if area.type == 'NODE_EDITOR':
+                area.tag_redraw()
+        
+        # Schedule the socket reset and state restoration
+        bpy.app.timers.register(lambda: _reset_pulse_socket_later(active_socket.node.fn_node_id, active_socket.identifier, tree), first_interval=1.0)
+    else:
+        # It's a datablock socket, so save it as the last active one
+        _last_active_datablock_socket_info = (active_socket.node.fn_node_id, active_socket.identifier)
+
 
 def _process_write_file_declarations(declarations):
     for decl in declarations:
@@ -147,8 +203,11 @@ def _process_write_file_declarations(declarations):
             logger.log("[FN_write_file] Error: File path is not specified in declaration.")
             continue
 
-        if os.path.exists(file_path) and not overwrite:
-            logger.log(f"[FN_write_file] Error: File '{file_path}' already exists and overwrite is False.")
+        # Normalize the path to handle Windows backslashes and make it absolute.
+        normalized_path = bpy.path.abspath(file_path)
+
+        if os.path.exists(normalized_path) and not overwrite:
+            logger.log(f"[FN_write_file] Error: File '{normalized_path}' already exists and overwrite is False.")
             continue
 
         datablocks_to_write = set()
@@ -162,8 +221,8 @@ def _process_write_file_declarations(declarations):
             continue
 
         try:
-            bpy.data.libraries.write(file_path, datablocks_to_write, fake_user=True, compress=True)
-            logger.log(f"[FN_write_file] Successfully wrote {len(datablocks_to_write)} datablocks to {file_path}")
+            bpy.data.libraries.write(normalized_path, datablocks_to_write, fake_user=True, compress=True)
+            logger.log(f"[FN_write_file] Successfully wrote {len(datablocks_to_write)} datablocks to {normalized_path}")
         except Exception as e:
             logger.log(f"[FN_write_file] Error: Failed to write file: {e}")
 
@@ -579,8 +638,8 @@ def update_ui_for_active_socket(tree: bpy.types.NodeTree, active_socket: bpy.typ
         return
 
     final_output_uuid = node_results.get(active_socket.identifier)
-    if not final_output_uuid:
-        logger.log(f"[FN_DEBUG] update_ui_for_active_socket: No output UUID found for socket {active_socket.identifier} on node {active_socket.node.fn_node_id}")
+    if not final_output_uuid or not uuid_manager.is_valid_uuid(final_output_uuid):
+        logger.log(f"[FN_DEBUG] update_ui_for_active_socket: No valid output UUID found for socket {active_socket.identifier} on node {active_socket.node.fn_node_id}. This is expected for Pulse sockets.")
         return
 
     logger.log(f"[FN_DEBUG] update_ui_for_active_socket: final_output_uuid = {final_output_uuid}")
@@ -649,6 +708,20 @@ def _evaluate_node(tree, node, session_cache, required_uuids, required_relations
             final_value = None
         
         node_results = {output_socket_id: final_value}
+        session_cache[node.fn_node_id] = node_results
+        return node_results
+
+    # --- Special Handling for Sequence of Actions Node ---
+    elif node.bl_idname == "FN_sequence_of_actions":
+        # Evaluate all input actions sequentially
+        for i in range(node.action_count):
+            input_socket = node.inputs[i]
+            if input_socket.is_linked:
+                link = input_socket.links[0]
+                _evaluate_node(tree, link.from_node, session_cache, required_uuids, required_relationships, required_states, required_assignments, creation_declarations, load_file_declarations, write_file_declarations)
+        
+        # The node itself just passes the pulse through
+        node_results = {node.outputs[0].identifier: True}
         session_cache[node.fn_node_id] = node_results
         return node_results
 

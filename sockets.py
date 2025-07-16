@@ -453,6 +453,20 @@ class FNSocketActionList(FN_SocketBase):
     def draw_color(self, context, node):
         return _color(0.9, 0.4, 0.7)
 
+# Custom Pulse Socket for executable actions
+class FNSocketPulse(FN_SocketBase):
+    bl_idname = "FNSocketPulse"
+    bl_label = "Pulse Socket"
+    
+    show_selector: bpy.props.BoolProperty(default=False)
+    default_value: bpy.props.BoolProperty(default=False)
+
+    def draw(self, context, layout, node, text):
+        _draw_value_socket(self, layout, "", 'PLAY')
+
+    def draw_color(self, context, node):
+        return (0.0, 0.0, 0.0, 1.0)
+
 
 _all_sockets = (
     FNSocketString,
@@ -475,6 +489,7 @@ _all_sockets = (
     FNSocketWorkSpace,
     FNSocketArmature,
     FNSocketAction,
+    FNSocketPulse,
     FNSocketSceneList,
     FNSocketObjectList,
     FNSocketCollectionList,
