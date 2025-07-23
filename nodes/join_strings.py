@@ -2,55 +2,45 @@ import bpy
 from ..nodes.base import FNBaseNode
 from ..sockets import FNSocketString
 
-def _update_node(self, context):
-    self.update_sockets(context)
-    self._trigger_update(context)
-
 class FN_join_strings(FNBaseNode, bpy.types.Node):
+    """Joins multiple strings together."""
     bl_idname = "FN_join_strings"
     bl_label = "Join Strings"
 
-    string_count: bpy.props.IntProperty(
-        name="Strings",
-        default=2,
-        min=0,
-        update=_update_node
+    separator: bpy.props.StringProperty(
+        name="Separator", 
+        default=", ",
+        update=lambda s,c: s.id_data.update_tag()
+    )
+
+    string_inputs: bpy.props.IntProperty(
+        name="Strings", 
+        default=2, min=2,
+        update=lambda s,c: s.update_sockets()
     )
 
     def init(self, context):
         FNBaseNode.init(self, context)
-        self.manages_scene_datablock = False
-        self.update_sockets(context)
-
-    def update_sockets(self, context):
-        # Clear existing sockets
-        while self.inputs:
-            self.inputs.remove(self.inputs[-1])
-        while self.outputs:
-            self.outputs.remove(self.outputs[-1])
-
-        # Add separator input
-        self.inputs.new('FNSocketString', "Separator")
-
-        # Add string input sockets
-        for i in range(self.string_count):
-            self.inputs.new('FNSocketString', str(i))
-
-        # Add output string socket
-        self.outputs.new('FNSocketString', "Output")
-
-    
+        self.outputs.new('FNSocketString', "Result")
+        self.update_sockets()
 
     def draw_buttons(self, context, layout):
-        layout.prop(self, "string_count", text="Strings")
+        layout.prop(self, "separator")
+        layout.prop(self, "string_inputs")
+
+    def update_sockets(self):
+        while len(self.inputs) < self.string_inputs:
+            self.inputs.new('FNSocketString', f"String {len(self.inputs) + 1}")
+        while len(self.inputs) > self.string_inputs:
+            self.inputs.remove(self.inputs[-1])
 
     def execute(self, **kwargs):
-        separator = kwargs.get(self.inputs['Separator'].identifier, "")
+        strings_to_join = []
+        for i in range(self.string_inputs):
+            socket_id = self.inputs[i].identifier
+            s = kwargs.get(socket_id)
+            if s:
+                strings_to_join.append(s)
         
-        joined_string = []
-        for i in range(self.string_count):
-            input_string = kwargs.get(self.inputs[str(i)].identifier)
-            if input_string is not None:
-                joined_string.append(str(input_string))
-        
-        return {self.outputs['Output'].identifier: separator.join(joined_string)}
+        result = self.separator.join(strings_to_join)
+        return { self.outputs[0].identifier: result }

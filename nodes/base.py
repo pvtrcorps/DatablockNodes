@@ -37,6 +37,10 @@ class FNBaseNode(bpy.types.Node):
         self.fn_node_id = str(uuid.uuid4())
         self.fn_output_uuid = str(uuid.uuid4())
 
+    def get_persistent_uuid(self, identifier: str):
+        """Generates a deterministic UUID for a part of the node."""
+        return str(uuid.uuid5(uuid.UUID(self.fn_node_id), identifier))
+
     def execute(self, tree: bpy.types.NodeTree, execution_cache: dict) -> tuple[dict, dict]:
         """Executes the node's logic and updates the execution cache.
         This method should be overridden by subclasses.

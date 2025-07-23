@@ -1,106 +1,118 @@
-# Datablock Nodes Addon: Guía para Desarrolladores
+# Datablock Nodes: Un Motor de Composición de Escenas para Blender
 
-Este documento describe la arquitectura y los principios fundamentales del addon Datablock Nodes para Blender. Su objetivo es proporcionar una comprensión clara del sistema para nuevos colaboradores, enfocándose en la gestión de datos, la idempotencia, el flujo de ejecución y la gestión de relaciones entre datablocks.
+**Versión de Arquitectura: 8.0 ("El Estándar de la Industria")**
 
-## 1. Objetivo Principal
+---
 
-El addon Datablock Nodes permite la manipulación programática y nodal de los datablocks de Blender (objetos, escenas, mallas, colecciones, etc.). El diseño busca ser **idempotente** (misma entrada siempre produce la misma salida) y permitir **ramificaciones explícitas** en el flujo de datos, similar a los Geometry Nodes de Blender. A diferencia de versiones anteriores, el sistema ahora opera bajo una **arquitectura de carga bajo demanda**. Esto significa que solo los datablocks de la rama activa del árbol de nodos existen en Blender en un momento dado. Los datablocks de ramas inactivas son destruidos para liberar recursos y se recrean cuando su rama se vuelve a activar, **preservando cualquier modificación manual realizada por el usuario**.
+### 1. Visión y Filosofía: Hacia Dónde Vamos
 
-## 2. Principios Fundamentales
+**Datablock Nodes** es un motor de composición de escenas para Blender, diseñado bajo una filosofía procedural y no destructiva. Nuestra visión es alinear Blender con los flujos de trabajo estándar de la industria, inspirándonos directamente en los principios de **Gaffer** y la estructura de datos de **Universal Scene Description (USD)** de Pixar.
 
-### 2.1. Arquitectura 100% Declarativa
+**Queremos ser la capa de abstracción que le da superpoderes a Blender.** No reemplazamos el sistema de datos de Blender, sino que lo envolvemos en un paradigma nodal más potente, donde la escena se trata como un flujo de datos computable.
 
-El núcleo del addon es un paradigma estrictamente declarativo. Los nodos **nunca** modifican directamente el estado de Blender. En su lugar, **declaran** el estado final deseado, y un motor centralizado, el **Reconciliador**, se encarga de aplicar esos cambios de manera segura y eficiente.
+Nuestra dirección de diseño se basa en tres pilares:
 
-### 2.2. Idempotencia y Preservación de Datos
+1.  **Estructura de Datos (Inspirada en USD):** La unidad fundamental es el `DatablockProxy` (nuestro `Prim`), identificado por un `path` jerárquico. La jerarquía de `paths` define tanto la **organización** como la **jerarquía de transformación**, unificando ambos conceptos como lo hace USD.
+2.  **Funcionamiento Nodal (Inspirado en Gaffer):** La escena fluye de nodo en nodo. Nodos atómicos y predecibles (`Parent`, `Merge`, `SetProperty`) se combinan para crear operaciones complejas. La lógica es explícita y visible en el grafo.
+3.  **Experiencia de Usuario (Nativa de Blender):** El resultado final de nuestro grafo de proxies se "materializa" en datablocks y relaciones nativas de Blender. El objetivo es que un artista de Blender, sin conocimientos previos de USD o Gaffer, pueda usar el addon de forma intuitiva.
 
-*   **Idempotencia:** El sistema está diseñado para que, al ejecutar el árbol de nodos múltiples veces con las mismas entradas, el estado final de los datablocks en Blender sea siempre el mismo, sin crear duplicados (`.001`, `.002`, etc.).
-*   **Preservación de Datos:** Un principio clave es permitir que las modificaciones manuales del usuario sobre un datablock (ej. mover un objeto, editar una malla) persistan entre activaciones de ramas. Cuando un datablock de una rama inactiva es destruido, sus propiedades modificadas manualmente son serializadas y almacenadas. Al recrearse el datablock (cuando su rama se activa de nuevo), estas modificaciones son restauradas. Esto se logra mediante:
-    *   **UUIDs Persistentes:** Cada datablock gestionado por el addon recibe un UUID único (`_fn_uuid`) que se almacena directamente en el datablock de Blender.
-    *   **Mapa de Overrides:** Una nueva estructura de datos persistente (`fn_override_map`) almacena las modificaciones manuales de los datablocks inactivos.
+---
 
-### 2.3. Ramificaciones Explícitas (Copy-on-Write)
+### 2. Arquitectura del Núcleo y Flujo de Datos
 
-El sistema no "adivina" cuándo debe copiar un datablock. La lógica es explícita y controlada por el `reconciler` y la mutabilidad de los sockets. Este mecanismo es crucial en la arquitectura de carga bajo demanda, ya que asegura que cada rama tenga su propia versión del datablock para modificar.
+El sistema se fundamenta en varios conceptos clave que definen cómo viaja y se transforma la información.
 
-*   **Modificación In-Place:** Si un datablock se pasa a un nodo modificador y la salida del nodo anterior no tiene múltiples conexiones (no hay ramificación), el nodo modificador opera directamente sobre el datablock original.
-*   **Copia-en-Escritura:** Si la salida de un nodo tiene múltiples conexiones (es un punto de ramificación) Y el socket de entrada del nodo siguiente es `is_mutable = True` (indicando que el nodo modificará el datablock), el `reconciler` crea una **copia implícita** del datablock. A esta copia se le asigna un **nuevo y único UUID** para asegurar que ambas ramas del flujo de datos puedan coexistir y ser gestionadas independientemente. Para nodos que explícitamente crean nuevas instancias (como 'Derive Datablock'), su socket de entrada debe tener `is_mutable = False` para evitar copias redundantes y asegurar que el nodo gestione su propia lógica de creación.
+#### a. El `DatablockProxy`: La Primitiva de la Escena
 
-### 2.4. Gestión de Relaciones y Propiedades
+La estructura de datos fundamental que fluye por los nodos no es un objeto de Blender, sino un objeto Python llamado `DatablockProxy` (definido en `proxy_types.py`). Este objeto es un "plano" o una "intención" de que algo exista.
 
-Existen dos formas de declarar relaciones, dependiendo de la naturaleza de la operación:
+- **Atributos Clave:**
+    - **`path`:** Una ruta jerárquica única (ej. `/root/character/rig/controls`) que define la posición del prim en el grafo de la escena. **Este path representa directamente la jerarquía de transformación.**
+    - `fn_uuid`: Un identificador universal único y persistente. Es crucial para la estabilidad de los overrides manuales.
+    - `properties`: Un diccionario que contiene todos los atributos del prim (su `datablock_type`, `name`, etc.) y sus relaciones (`_fn_relationships`).
+    - `parent` y `children`: Definen la estructura del árbol de proxies.
 
-*   **Asignación de Propiedades (Genérico):** Para la mayoría de las operaciones (asignar un material, un padre, un `world`), el nodo declara una **asignación de propiedad**. Esto le dice al reconciliador: "Asegúrate de que la propiedad `X` del datablock `A` apunte al datablock `B`". Este sistema es genérico y escalable.
-*   **Relaciones de Colección (Específico):** Para operaciones que involucran colecciones de Blender (`.link`/`.unlink`), como añadir un objeto a una colección, el nodo declara una **relación de colección**. Esto es necesario porque estas operaciones no son simples asignaciones de propiedades.
+#### b. Jerarquía `Object/Data`
 
-## 3. Componentes Clave
+Para representar un objeto de Blender, usamos una jerarquía de proxies anidada y estricta. Un objeto `Light` llamado `KeyLight` se representa como:
+- Un proxy de tipo `OBJECT` en el path `/root/KeyLight`.
+- Un proxy de tipo `LIGHT` (el data) en el path `/root/KeyLight/data`.
 
-### 3.1. `reconciler.py`
+Esta estructura es una convención fija que nos alinea con la forma en que USD separa la transformación de los datos.
 
-Es el motor de orquestación y el componente más crítico del addon. Su principio fundamental es que **el estado del archivo de Blender debe ser un reflejo del estado declarado por la rama activa del árbol de nodos**.
+#### c. El Flujo de "Escena Única" y la Clonación
 
-*   **`datablock_nodes_depsgraph_handler(scene, depsgraph)`**: El punto de entrada principal. Se dispara con cada actualización del `depsgraph` de Blender. Contiene un mecanismo de "cerrojo" para evitar re-entradas y bucles infinitos.
-*   **`trigger_execution(tree)`**: Orquesta el proceso de evaluación y sincronización. Identifica la rama activa y delega la evaluación y la sincronización.
-*   **`_evaluate_active_branch(tree, active_socket, active_branch_nodes)`**: Esta función evalúa **solo** los nodos que pertenecen a la rama activa, construyendo un "plan activo" en memoria (UUIDs, estados, relaciones, asignaciones de propiedades y declaraciones de creación/carga de archivos) para esa rama. Ahora también devuelve `load_file_declarations`.
-*   **`_synchronize_blender_state(tree, active_uuids, active_states, active_relationships, active_assignments, creation_declarations)`**: El corazón del reconciliador en la nueva arquitectura. Su responsabilidad es asegurar que el estado de Blender coincida con el "plan activo".
-    1.  **Fase de Destrucción:** Identifica todos los datablocks gestionados por el addon que **no** están en el `active_uuids` del plan. Para cada uno de ellos:
-        *   Serializa sus propiedades modificadas manualmente usando `_serialize_overrides` y las guarda en el `fn_override_map`.
-        *   Elimina el datablock de Blender (`bpy.data.collection.remove()`).
-        *   Limpia sus entradas correspondientes de los mapas persistentes (`fn_state_map`, `fn_relationships_map`, `fn_property_assignments_map`).
-    2.  **Fase de Creación/Actualización:** Para cada datablock en el `active_uuids` del plan, y siguiendo un orden topológico para respetar las dependencias:
-        *   Si el datablock no existe en Blender (porque fue destruido o es nuevo), se crea (esto ocurre implícitamente a través de la ejecución de los nodos y las declaraciones `CREATE_DATABLOCK`, `DERIVE` o `COPY`).
-        *   Inmediatamente después de la creación, llama a `_apply_overrides` para restaurar cualquier modificación manual previamente guardada.
-        *   Aplica las propiedades y relaciones del plan activo de forma **defensiva** (solo si el valor en Blender difiere del plan), para evitar disparar el `depsgraph` innecesariamente.
-*   **`_topological_sort_creation_declarations(creation_declarations)`**: Nueva función que ordena las declaraciones de creación para asegurar que los datablocks de origen se creen antes que los datablocks que dependen de ellos, resolviendo problemas de dependencias en cascada.
-*   **`_serialize_overrides(datablock)`**: Nueva función que captura las propiedades modificadas manualmente de un datablock y las convierte a un string JSON. Maneja tipos complejos de Blender (`Vector`, `Matrix`, `bpy_prop_array`) convirtiéndolos a listas para la serialización.
-*   **`_apply_overrides(datablock, tree)`**: Nueva función que lee el JSON de overrides y aplica las propiedades guardadas a un datablock. Reconstruye los tipos complejos de Blender a partir de las listas JSON.
+Los nodos se conectan mediante un `FNSocketScene`. Este socket no transporta listas de objetos, sino **una única referencia al `DatablockProxy` raíz** de un árbol de escena.
 
-### 3.2. Mapas de Estado en `DatablockTree`
+El flujo es estrictamente **no destructivo**. Cada nodo que modifica una escena sigue este patrón:
+1.  Recibe un `DatablockProxy` raíz como entrada.
+2.  **Clona** profundamente todo el árbol de proxies entrante (`proxy.clone()`).
+3.  Realiza sus modificaciones sobre la escena clonada.
+4.  Devuelve el `DatablockProxy` raíz de la escena modificada en su socket de salida.
 
-*   **`fn_state_map`**: Registro de los datablocks creados o importados por los nodos.
-*   **`fn_relationships_map`**: Registro de las relaciones de colección (`.link`/`.unlink`) declaradas.
-*   **`fn_property_assignments_map`**: Registro de las asignaciones de propiedades genéricas declaradas.
-*   **`fn_override_map`**: **Nuevo**. Almacena las propiedades modificadas manualmente de los datablocks que han sido destruidos (porque su rama se volvió inactiva), permitiendo su restauración al recrearse.
+---
 
-### 3.3. Nodos (ej. `nodes/new_datablock.py`, `nodes/set_object_parent.py`)
+### 3. El Motor de Ejecución (Directorio `engine`)
 
-Los nodos operan bajo un un **principio estrictamente declarativo**. Su única responsabilidad es ejecutar su lógica interna y devolver un diccionario con sus resultados. **Nunca deben modificar el `NodeTree` (`tree`) ni el estado de Blender directamente.**
+El directorio `engine` es el cerebro del addon. Orquesta el proceso de convertir el grafo de nodos en una escena real de Blender.
 
-*   **Nodos Creadores/Modificadores:** Devuelven un diccionario que contiene el **UUID** del datablock de salida y, si aplica, una clave `'states'` para declarar la existencia de un datablock. Para declarar la creación de un nuevo datablock (como en `New Datablock` o `Derive Datablock`), se utiliza la clave `'declarations'` con el tipo de declaración (`'create_datablock'`, `'derive_datablock'`, `'copy_datablock'`).
-*   **Nodos de Asignación de Propiedades (`set_object_parent`):** Devuelven una clave `'property_assignments'` con una lista de diccionarios que describen la asignación (`target_uuid`, `property_name`, `value_uuid` o `value_json`).
-*   **Nodos de Relación de Colección (`link_to_collection`):** Devuelven una clave `'relationships'` con una lista de tuplas que describen el vínculo.
-*   **Nodos Lectores de Propiedades (`get_datablock_content`):** Reciben UUIDs como entrada, utilizan `uuid_manager.find_datablock_by_uuid` para acceder a las propiedades del datablock en Blender, y devuelven **UUIDs** para cualquier datablock referenciado en sus salidas.
+#### a. Fase 1: Orquestación (`orchestrator.py`)
 
-## 4. Flujo de Ejecución: Enfocado vs. Global
+1.  **Evaluación del Grafo de Nodos:** El orquestador comienza en el nodo final activo y viaja "hacia atrás", ejecutando la lógica `execute()` de cada nodo para obtener el `DatablockProxy` raíz final.
+2.  **Llamada al Planificador:** Este proxy raíz se pasa al planificador.
+3.  **Sincronización y Destrucción:** Compara los `fn_uuid` del plan con los datablocks ya gestionados. Los que ya no están en el plan se destruyen.
+4.  **Llamada al Materializador:** El plan de ejecución se pasa al materializador.
 
-En la nueva arquitectura de carga bajo demanda, el sistema opera principalmente en un **Modo Enfocado**.
+#### b. Fase 2: Planificación (`planner.py`)
 
-*   **Modo Enfocado (Principal):** Si un usuario activa un socket de salida (mediante el botón de activación en la UI del socket), el reconciliador evalúa **únicamente** la cadena de nodos que conduce a ese socket. Todos los datablocks que no forman parte de esta rama activa son destruidos, y solo los de la rama activa son creados/actualizados. Esto permite una gestión eficiente de los recursos y una visualización clara del resultado de una rama específica.
-*   **Modo Global (Implícito/Transitorio):** El concepto de un "modo global" donde todos los datablocks existen simultáneamente ha sido eliminado. Si no hay ningún socket activo, el addon no realiza ninguna acción de sincronización, asumiendo que el usuario no ha declarado una rama activa para visualizar. La persistencia de los datablocks entre sesiones de Blender se gestiona a través de los overrides y la recreación bajo demanda.
+- El planificador recibe el proxy raíz, aplana la jerarquía y construye un grafo de dependencias basado **únicamente en relaciones explícitas** (`_fn_relationships`). La jerarquía de `paths` no se usa para el orden de creación.
+- Utiliza un **ordenamiento topológico** para producir una lista lineal de proxies en el orden correcto de creación: el **plan de ejecución**.
 
-## 5. Cómo Implementar un Nuevo Nodo
+#### c. Fase 3: Materialización (`materializer.py`)
 
-1.  **Crear un nuevo archivo Python** en la carpeta `nodes/`.
-2.  **Definir la clase del nodo** heredando de `FNBaseNode` y `bpy.types.Node`.
-3.  **Método `init(self, context)`:** Define los sockets de entrada y salida.
-4.  **Método `execute(self, **kwargs)`:** Contiene la lógica principal del nodo. Este método es **estrictamente declarativo**.
-    *   **NUNCA** modifique `kwargs.get('tree')` ni llame a `bpy.ops` o funciones que modifiquen el estado de Blender.
-    *   **Si el nodo asigna una propiedad:** Devuelva una clave `'property_assignments'`.
-        ```python
-        return {
-            self.outputs[0].identifier: my_object,
-            'property_assignments': [{
-                'target_uuid': uuid_of_my_object,
-                'property_name': 'parent',
-                'value_uuid': uuid_of_parent_object
-            }]
-        }
-        ```
-    *   **Si el nodo gestiona una relación de colección:** Devuelva una clave `'relationships'`.
-        ```python
-        return {
-            self.outputs[0].identifier: output_collection,
-            'relationships': [(obj_uuid, col_uuid, 'COLLECTION_OBJECT_LINK')]
-        }
-        ```
-5.  **Registrar el nodo** en `__init__.py`.
+El materializador recibe el plan y lo convierte en datablocks reales en tres pasadas:
+
+1.  **Pasada 1: Creación:** Crea los datablocks (`Object`, `Mesh`, `Light`...) y les asigna su `fn_uuid`.
+2.  **Pasada 2: Configuración y Overrides:** Aplica las propiedades base del proxy y, crucialmente, las modificaciones manuales del artista.
+3.  **Pasada 3: Relaciones:**
+    - **Parentesco:** Infiere la jerarquía de transformación directamente de la estructura de `paths` de los proxies y la crea en Blender.
+    - **Otras Relaciones:** Establece enlaces a colecciones y otras relaciones explícitas.
+
+---
+
+### 4. El Sistema de Overrides Manuales
+
+Esta es una de las características más potentes.
+1.  Cuando un objeto se materializa, su estado "puro" se guarda en un snapshot.
+2.  El artista puede modificar libremente el objeto en el viewport.
+3.  Un handler (`override_handler.py`) detecta el cambio, lo compara con el snapshot y guarda la diferencia ("delta").
+4.  En la siguiente ejecución, el `materializer` aplica el estado de los nodos y, justo después, aplica este delta, asegurando que el trabajo manual siempre tenga la última palabra.
+
+---
+
+### 5. Sistema de Selección: El Nodo `Select`
+
+El sistema de selección utiliza un lenguaje de consulta para identificar prims.
+
+`patrón_de_ruta {filtro_1; filtro_2; ...}`
+
+- **Patrón de Ruta:** Usa wildcards (`*` y `**`) para seleccionar por `path`.
+- **Filtros:** Refinan la selección por propiedades (`name:lamp`, `type:MESH`).
+
+**Ejemplos:**
+- `/root/geo/props/*`
+- `** {type:LIGHT}`
+- `/root/geo/** {type:MESH}`
+
+---
+
+### 6. Tipos de Nodos Principales
+
+- **Generators:** Crean escenas desde cero (`Light`, `Cube`, `Import`).
+- **Selection:** Crean y manipulan consultas de selección (`Select`, `Union`).
+- **Modifiers:** Modifican los proxies seleccionados (`Set Property`, `Prune`).
+- **Hierarchy:** Modifican la estructura de la escena.
+    - **`Parent`:** Establece la jerarquía de transformación, re-escribiendo el `path` de los hijos para anidarlos bajo el padre.
+- **Composition:**
+    - **`Merge`:** Compone dos escenas. Utiliza una lógica de **fusión profunda (deep merge)**. Si un prim existe en ambas entradas, sus propiedades se fusionan (la segunda entrada gana en caso de conflicto) y sus hijos se combinan.
+- **Executors:** Realizan acciones en el mundo real (`Batch Render`).

@@ -1,70 +1,72 @@
-
 bl_info = {
     "name": "Datablock Nodes",
-    "author": "Your Name Here",
-    "version": (2, 0, 0),
+    "author": "Gemini & The V5.3 Architecture Team",
+    "version": (5, 3, 0),
     "blender": (3, 0, 0),
     "location": "Node Editor",
-    "description": "A declarative, procedural datablock management system.",
+    "description": "A hierarchical, non-destructive scene composition engine.",
     "warning": "",
     "doc_url": "",
     "category": "Node",
 }
 
-
 from . import logger
-logger.log("--- Loading Datablock Nodes Addon ---")
+logger.log("--- Loading Datablock Nodes Addon (V5.3 Engine) ---")
 
 import bpy
 from nodeitems_utils import NodeCategory, NodeItem, register_node_categories, unregister_node_categories
 
-from . import operators
-from . import sockets
+# --- Core Modules ---
 from . import properties
-from . import reconciler
-from .nodes import new_datablock, set_datablock_name, link_to_scene, create_list, new_value, link_to_collection, join_strings, split_string, value_to_string, switch, get_item_from_list, import_datablock, read_file, write_file, set_datablock_properties, set_object_data, set_scene_world, set_object_material, set_object_parent, derive_datablock, get_datablock_content, sequence_of_actions
-from .nodes.set_datablock_properties import FN_OT_internal_add_remove_property, FN_OT_internal_reorder_property
+from . import sockets
+from . import operators
+from . import override_handler # The override handler is still a key feature
+from .engine import entry_point
 
-# --- State Map Item ---
-class FNStateMapItem(bpy.types.PropertyGroup):
-    node_id: bpy.props.StringProperty()
-    socket_identifier: bpy.props.StringProperty() # New: Identifier of the socket this item belongs to
-    datablock_uuids: bpy.props.StringProperty()
+# --- V5.3 Node Imports ---
+from .nodes import (
+    # Generators
+    scene,
+    import_node,
+    light,
+    camera,
+    empty,
+    collection,
+    cube,
+    
+    # Selection
+    select,
+    union_selection,
+    intersection_selection,
+    difference_selection,
 
-# --- Property Assignment Map Item ---
-class FNPropertyAssignmentItem(bpy.types.PropertyGroup):
-    target_uuid: bpy.props.StringProperty()
-    property_name: bpy.props.StringProperty()
-    value_type: bpy.props.EnumProperty(
-        items=[('UUID', 'UUID', ''), ('LITERAL', 'Literal', '')],
-        default='UUID'
-    )
-    value_uuid: bpy.props.StringProperty() # For UUID-based assignments
-    value_json: bpy.props.StringProperty() # For literal value assignments (JSON encoded)
+    # Composition
+    merge,
+    
+    # Modifiers
+    set_property,
+    prune,
+    parent,
+    set_collection,
+    parent_collection,
+    
+    # Executors
+    create_scene_list,
+    batch_render,
 
-# --- Relationship Map Item ---
-class FNRelationshipItem(bpy.types.PropertyGroup):
-    node_id: bpy.props.StringProperty()
-    source_uuid: bpy.props.StringProperty()
-    target_uuid: bpy.props.StringProperty()
-    relationship_type: bpy.props.StringProperty() # e.g., "COLLECTION_OBJECT_LINK", "COLLECTION_CHILD_LINK"
-
+    # Values
+    string,
+    join_strings,
+)
 
 # --- Node Tree ---
 class DatablockTree(bpy.types.NodeTree):
-    """A node tree for procedural datablock management."""
     bl_idname = 'DatablockTreeType'
     bl_label = "Datablock Node Tree"
     bl_icon = 'NODETREE'
-
-    # Property to store the state map
-    fn_state_map: bpy.props.CollectionProperty(type=FNStateMapItem)
-    # Property to store the property assignments map
-    fn_property_assignments_map: bpy.props.CollectionProperty(type=FNPropertyAssignmentItem)
-    # Property to store the relationships map
-    fn_relationships_map: bpy.props.CollectionProperty(type=FNRelationshipItem)
-    # Property to store the overrides map
+    fn_declared_state_map: bpy.props.CollectionProperty(type=properties.FNDeclaredStateItem)
     fn_override_map: bpy.props.CollectionProperty(type=properties.FNOverrideItem)
+    fn_initial_state_map: bpy.props.CollectionProperty(type=properties.FNInitialStateItem)
 
 # --- UI ---
 class DATABLOCK_PT_panel(bpy.types.Panel):
@@ -72,110 +74,104 @@ class DATABLOCK_PT_panel(bpy.types.Panel):
     bl_space_type = 'NODE_EDITOR'
     bl_region_type = 'UI'
     bl_category = "Datablock"
-
     @classmethod
     def poll(cls, context):
-        if context.space_data and hasattr(context.space_data, 'tree_type'):
-            return context.space_data.tree_type == 'DatablockTreeType'
-        return False
-
+        return context.space_data and hasattr(context.space_data, 'tree_type') and context.space_data.tree_type == 'DatablockTreeType'
     def draw(self, context):
-        layout = self.layout
-        
+        pass
 
-# --- Node Categories ---
+# --- V5.3 Node Categories ---
 node_categories = [
-    NodeCategory("DATABLOCK_NODES", "Nodes", items=[
-        NodeItem("FN_new_datablock"),
-        NodeItem("FN_import_datablock"),
-        NodeItem("FN_derive_datablock"),
-        NodeItem("FN_get_datablock_content"),
-        NodeItem("FN_new_value"),
-        NodeItem("FN_set_datablock_name"),
-        NodeItem("FN_link_to_scene"),
-        NodeItem("FN_link_to_collection"),
-        NodeItem("FN_create_list"),
-        NodeItem("FN_switch"),
-        NodeItem("FN_join_strings"),
-        NodeItem("FN_split_string"),
-        NodeItem("FN_value_to_string"),
-        NodeItem("FN_get_item_from_list"),
-        NodeItem("FN_read_file"),
-        NodeItem("FN_write_file"),
-        NodeItem("FN_set_datablock_properties"),
-        NodeItem("FN_set_object_data"),
-        NodeItem("FN_set_scene_world"),
-        NodeItem("FN_set_object_material"),
-        NodeItem("FN_set_object_parent"),
-        NodeItem("FN_sequence_of_actions"),
+    NodeCategory("VALUES", "Values", items=[
+        NodeItem(string.FN_string.bl_idname),
+        NodeItem(join_strings.FN_join_strings.bl_idname),
+    ]),
+    NodeCategory("SELECTION", "Selection", items=[
+        NodeItem(select.FN_select.bl_idname),
+        NodeItem(union_selection.FN_union_selection.bl_idname),
+        NodeItem(intersection_selection.FN_intersection_selection.bl_idname),
+        NodeItem(difference_selection.FN_difference_selection.bl_idname),
+    ]),
+    NodeCategory("GENERATORS", "Generators", items=[
+        NodeItem(scene.FN_scene.bl_idname),
+        NodeItem(import_node.FN_import.bl_idname),
+        NodeItem(light.FN_light.bl_idname),
+        NodeItem(camera.FN_camera.bl_idname),
+        NodeItem(empty.FN_empty.bl_idname),
+        NodeItem(collection.FN_collection.bl_idname),
+        NodeItem(cube.FN_cube.bl_idname),
+    ]),
+    NodeCategory("COMPOSITION", "Composition", items=[
+        NodeItem(merge.FN_merge.bl_idname),
+    ]),
+    NodeCategory("MODIFIERS", "Modifiers", items=[
+        NodeItem(set_property.FN_set_property.bl_idname),
+        NodeItem(prune.FN_prune.bl_idname),
+        NodeItem(parent.FN_parent.bl_idname),
+        NodeItem(set_collection.FN_set_collection.bl_idname),
+        NodeItem(parent_collection.FN_parent_collection.bl_idname),
+    ]),
+    NodeCategory("EXECUTORS", "Executors", items=[
+        NodeItem(create_scene_list.FN_create_scene_list.bl_idname),
+        NodeItem(batch_render.FN_batch_render.bl_idname),
     ]),
 ]
 
-# --- REGISTRATION ---
-
-classes = (
-    FNStateMapItem,
-    FNPropertyAssignmentItem,
-    FNRelationshipItem,
+# --- Registration ---
+# Gather all node classes and other classes to register
+classes_to_register = (
     DatablockTree,
-    
     DATABLOCK_PT_panel,
-    new_datablock.FN_new_datablock,
-    import_datablock.FN_import_datablock,
-    derive_datablock.FN_derive_datablock,
-    get_datablock_content.FN_get_datablock_content,
-    new_value.FN_new_value,
-    set_datablock_name.FN_set_datablock_name,
-    link_to_scene.FN_link_to_scene,
-    link_to_collection.FN_link_to_collection,
-    create_list.FN_create_list,
-    switch.FN_switch,
+    scene.FN_scene,
+    import_node.FN_import,
+    light.FN_light,
+    camera.FN_camera,
+    empty.FN_empty,
+    collection.FN_collection,
+    cube.FN_cube,
+    select.FN_select,
+    union_selection.FN_union_selection,
+    intersection_selection.FN_intersection_selection,
+    difference_selection.FN_difference_selection,
+    merge.FN_merge,
+    set_property.FN_set_property,
+    prune.FN_prune,
+    parent.FN_parent,
+    set_collection.FN_set_collection,
+    parent_collection.FN_parent_collection,
+    create_scene_list.FN_create_scene_list,
+    string.FN_string,
     join_strings.FN_join_strings,
-    split_string.FN_split_string,
-    value_to_string.FN_value_to_string,
-    get_item_from_list.FN_get_item_from_list,
-    read_file.FN_read_file,
-    write_file.FN_write_file,
-    set_datablock_properties.FN_set_datablock_properties,
-    set_object_data.FN_set_object_data,
-    set_scene_world.FN_set_scene_world,
-    set_object_material.FN_set_object_material,
-    set_object_parent.FN_set_object_parent,
-    sequence_of_actions.FN_sequence_of_actions,
-    FN_OT_internal_add_remove_property,
-    FN_OT_internal_reorder_property,
-)
+) + batch_render._classes # batch_render includes an operator
 
 def register():
-    logger.log("[FN_Register] Registering addon...")
-    operators.register()
-    sockets.register()
-    properties.register() # New registration
-    for cls in classes:
-        bpy.utils.register_class(cls)
+    logger.log("[FN_Register] Registering V5.3 Engine...")
     
+    properties.register()
+    sockets.register()
+    operators.register()
+    
+    for cls in classes_to_register:
+        bpy.utils.register_class(cls)
+        
     register_node_categories("DATABLOCK_NODES", node_categories)
-
-    # Register the main depsgraph update handler for continuous execution
-    bpy.app.handlers.depsgraph_update_post.append(reconciler.datablock_nodes_depsgraph_handler)
+    
+    override_handler.register()
+    if entry_point.depsgraph_update_handler not in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.append(entry_point.depsgraph_update_handler)
 
 def unregister():
-    logger.log("[FN_Register] Unregistering addon...")
+    logger.log("[FN_Register] Unregistering V5.3 Engine...")
+    
+    if entry_point.depsgraph_update_handler in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(entry_point.depsgraph_update_handler)
+    override_handler.unregister()
+        
     unregister_node_categories("DATABLOCK_NODES")
-
-    for cls in reversed(classes):
+    
+    for cls in reversed(classes_to_register):
         bpy.utils.unregister_class(cls)
-    sockets.unregister()
-    properties.unregister() # New unregistration
+        
     operators.unregister()
-
-    # Remove the handler
-    try:
-        bpy.app.handlers.depsgraph_update_post.remove(reconciler.datablock_nodes_depsgraph_handler)
-        logger.log("[FN_Register] App handler removed.")
-    except ValueError:
-        logger.log("[FN_Register] App handler was not found, could not remove.")
-
-if __name__ == "__main__":
-    register()
-
+    sockets.unregister()
+    properties.unregister()
