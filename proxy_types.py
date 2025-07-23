@@ -169,9 +169,3 @@ class DatablockProxy:
             flat_list.extend(child.get_flat_list())
         return flat_list
 
-    def get_flat_list(self):
-        """Returns a flat list of all proxies in the subtree, including self."""
-        flat_list = [self]
-        for child in self.children:
-            flat_list.extend(child.get_flat_list())
-        return flat_list
