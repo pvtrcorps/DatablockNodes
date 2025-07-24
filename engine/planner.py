@@ -18,7 +18,10 @@ def plan_execution(root_proxy):
     in_degree = {p.path: 0 for p in all_proxies}
 
     for proxy in all_proxies:
-        
+        # Hierarchy dependency: a child depends on its parent
+        if proxy.parent:
+            adj[proxy.parent.path].append(proxy.path)
+            in_degree[proxy.path] += 1
 
         # Relationship dependencies
         if '_fn_relationships' in proxy.properties:

@@ -56,13 +56,21 @@ def set_nested_property(base, path, value):
         for part in parts[:-1]:
             obj = getattr(obj, part)
         prop_name = parts[-1]
-        prop = getattr(obj, prop_name)
+
+        # --- Optimization: Only write the property if the value has changed ---
+        current_value = getattr(obj, prop_name)
+        
+        # Convert list to mathutils type for proper comparison
         if isinstance(value, list):
-            if isinstance(prop, mathutils.Vector): value = mathutils.Vector(value)
-            elif isinstance(prop, mathutils.Color): value = mathutils.Color(value)
-            elif isinstance(prop, mathutils.Euler): value = mathutils.Euler(value)
-            elif isinstance(prop, mathutils.Quaternion): value = mathutils.Quaternion(value)
-            elif isinstance(prop, mathutils.Matrix): value = mathutils.Matrix(value)
+            if isinstance(current_value, mathutils.Vector): value = mathutils.Vector(value)
+            elif isinstance(current_value, mathutils.Color): value = mathutils.Color(value)
+            elif isinstance(current_value, mathutils.Euler): value = mathutils.Euler(value)
+            elif isinstance(current_value, mathutils.Quaternion): value = mathutils.Quaternion(value)
+            elif isinstance(current_value, mathutils.Matrix): value = mathutils.Matrix(value)
+
+        if current_value == value:
+            return True # Value is the same, no need to set it. Success.
+
         setattr(obj, prop_name, value)
         return True
     except (AttributeError, TypeError, ValueError):

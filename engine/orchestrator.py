@@ -90,22 +90,30 @@ def _destroy_datablocks_safely(uuids_to_destroy, all_managed_datablocks):
 
     # Destroy in a safe order: Content -> Containers
     for db in partitions['OBJECT']:
-        try: bpy.data.objects.remove(db) 
+        try: 
+            uuid_manager.unregister_datablock(db)
+            bpy.data.objects.remove(db) 
         except ReferenceError: pass
     for db in partitions['DATA']:
         try:
+            uuid_manager.unregister_datablock(db)
             collection_name = db.bl_rna.identifier.lower() + 's'
             if hasattr(bpy.data, collection_name):
                 getattr(bpy.data, collection_name).remove(db)
         except ReferenceError: pass
     for db in partitions['COLLECTION']:
-        try: bpy.data.collections.remove(db)
+        try: 
+            uuid_manager.unregister_datablock(db)
+            bpy.data.collections.remove(db)
         except ReferenceError: pass
     for db in partitions['SCENE']:
-        try: bpy.data.scenes.remove(db)
+        try: 
+            uuid_manager.unregister_datablock(db)
+            bpy.data.scenes.remove(db)
         except ReferenceError: pass
     for db in partitions['OTHER']:
         try:
+            uuid_manager.unregister_datablock(db)
             collection_name = db.bl_rna.identifier.lower() + 's'
             if hasattr(bpy.data, collection_name):
                 getattr(bpy.data, collection_name).remove(db)

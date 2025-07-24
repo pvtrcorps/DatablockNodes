@@ -21,8 +21,15 @@ def depsgraph_update_post_handler(scene, depsgraph):
     if not tree:
         return
 
-    # Check for changes in all managed datablocks
-    for db in uuid_manager.get_all_managed_datablocks().values():
+    # --- Optimization: Iterate only over updated datablocks ---
+    for update in depsgraph.updates:
+        db = update.id
+
+        # Check if the updated datablock is one we manage
+        if not uuid_manager.is_managed(db):
+            continue
+
+        # From here, the logic is the same, but it only runs for the specific updated datablock
         uuid_str = uuid_manager.get_uuid(db)
         if not uuid_str:
             continue
