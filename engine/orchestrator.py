@@ -45,6 +45,9 @@ def _synchronize_blender_state(tree, plan: list, depsgraph, root_proxy):
     
     if uuids_to_destroy:
         _destroy_datablocks_safely(uuids_to_destroy, current_datablocks)
+        # CRITICAL FIX: Invalidate the cache after destruction.
+        # This prevents the materializer from accessing stale, destroyed datablocks.
+        uuid_manager.invalidate_cache()
 
     # The materializer now handles all creation, configuration, and linking.
     materializer.materialize_plan(plan, tree)

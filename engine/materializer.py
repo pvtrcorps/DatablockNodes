@@ -72,7 +72,7 @@ def materialize_plan(plan: list, tree: bpy.types.NodeTree):
 
         # logger.log(f"[Materializer-P2] Configuring base state for {proxy.path}")
         for key, value in proxy.properties.items():
-            if key.startswith('_') or key in ['datablock_type', 'type']:
+            if key.startswith('_') or key in ['datablock_type']:
                 continue
             
             try:
