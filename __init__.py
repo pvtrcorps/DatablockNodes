@@ -25,36 +25,22 @@ from .engine import entry_point
 
 # --- V5.3 Node Imports ---
 from .nodes import (
-    # Generators
-    scene,
+    create_primitive,
     import_node,
-    light,
-    camera,
-    empty,
+    scene,
     collection,
-    cube,
-    
-    # Selection
     select,
     union_selection,
     intersection_selection,
     difference_selection,
-
-    # Composition
     merge,
-    
-    # Modifiers
     set_property,
     prune,
     parent,
     set_collection,
     parent_collection,
-    
-    # Executors
     create_scene_list,
     batch_render,
-
-    # Values
     string,
     join_strings,
 )
@@ -82,24 +68,17 @@ class DATABLOCK_PT_panel(bpy.types.Panel):
 
 # --- V5.3 Node Categories ---
 node_categories = [
-    NodeCategory("VALUES", "Values", items=[
-        NodeItem(string.FN_string.bl_idname),
-        NodeItem(join_strings.FN_join_strings.bl_idname),
+    NodeCategory("INPUT", "Input", items=[
+        NodeItem(scene.FN_scene.bl_idname),
+        NodeItem(import_node.FN_import.bl_idname),
+        NodeItem(create_primitive.FN_create_primitive.bl_idname),
+        # NodeItem(reference.FN_reference.bl_idname), # Will be added later
     ]),
     NodeCategory("SELECTION", "Selection", items=[
         NodeItem(select.FN_select.bl_idname),
         NodeItem(union_selection.FN_union_selection.bl_idname),
         NodeItem(intersection_selection.FN_intersection_selection.bl_idname),
         NodeItem(difference_selection.FN_difference_selection.bl_idname),
-    ]),
-    NodeCategory("GENERATORS", "Generators", items=[
-        NodeItem(scene.FN_scene.bl_idname),
-        NodeItem(import_node.FN_import.bl_idname),
-        NodeItem(light.FN_light.bl_idname),
-        NodeItem(camera.FN_camera.bl_idname),
-        NodeItem(empty.FN_empty.bl_idname),
-        NodeItem(collection.FN_collection.bl_idname),
-        NodeItem(cube.FN_cube.bl_idname),
     ]),
     NodeCategory("COMPOSITION", "Composition", items=[
         NodeItem(merge.FN_merge.bl_idname),
@@ -110,6 +89,10 @@ node_categories = [
         NodeItem(parent.FN_parent.bl_idname),
         NodeItem(set_collection.FN_set_collection.bl_idname),
         NodeItem(parent_collection.FN_parent_collection.bl_idname),
+    ]),
+    NodeCategory("VALUES", "Values", items=[
+        NodeItem(string.FN_string.bl_idname),
+        NodeItem(join_strings.FN_join_strings.bl_idname),
     ]),
     NodeCategory("EXECUTORS", "Executors", items=[
         NodeItem(create_scene_list.FN_create_scene_list.bl_idname),
@@ -122,26 +105,34 @@ node_categories = [
 classes_to_register = (
     DatablockTree,
     DATABLOCK_PT_panel,
+    # Input Nodes
     scene.FN_scene,
     import_node.FN_import,
-    light.FN_light,
-    camera.FN_camera,
-    empty.FN_empty,
-    collection.FN_collection,
-    cube.FN_cube,
+    create_primitive.FN_create_primitive,
+    # collection.FN_collection, # This is a generator, should be in Create Primitive
+    
+    # Selection Nodes
     select.FN_select,
     union_selection.FN_union_selection,
     intersection_selection.FN_intersection_selection,
     difference_selection.FN_difference_selection,
+    
+    # Composition Nodes
     merge.FN_merge,
+    
+    # Modifier Nodes
     set_property.FN_set_property,
     prune.FN_prune,
     parent.FN_parent,
     set_collection.FN_set_collection,
     parent_collection.FN_parent_collection,
-    create_scene_list.FN_create_scene_list,
+    
+    # Value Nodes
     string.FN_string,
     join_strings.FN_join_strings,
+
+    # Executor Nodes
+    create_scene_list.FN_create_scene_list,
 ) + batch_render._classes # batch_render includes an operator
 
 def register():
