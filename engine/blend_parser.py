@@ -14,7 +14,6 @@ if str(addon_parent_dir) not in sys.path:
 # Now we can use absolute imports from the package root
 from DatablockNodes.scene_assembler import SceneAssembler
 from DatablockNodes.engine import utils, constants
-from DatablockNodes.proxy_types import RelationshipType, resolve_relationship_type
 
 # V17.7: Define a consistent namespace UUID for the parser
 PARSER_NAMESPACE_UUID = uuid.UUID('a8b3c1d2-e4f5-a6b7-c8d9-e0f1a2b3c4d5')
@@ -29,8 +28,9 @@ def _promote_pointers_to_relationships(proxy, db_to_proxy_map, all_datablocks):
 
     print(f"[PARSER-DEBUG] Resolving relationships for: {proxy.path}")
 
+    relationships = proxy.properties.setdefault('_fn_relationships', {})
     props_to_delete = []
-
+    
     for key, value in list(proxy.properties.items()):
         if not (isinstance(value, dict) and value.get('_type') in ['NAME_POINTER', 'UUID_POINTER']):
             continue
@@ -53,12 +53,8 @@ def _promote_pointers_to_relationships(proxy, db_to_proxy_map, all_datablocks):
                 print(f"[PARSER-DEBUG]  - Cycle detected. Skipping promotion for key '{key}'. Property will be kept as a pointer.")
                 continue
             
-            rel_type = resolve_relationship_type(key)
-            if not rel_type:
-                continue
-
             print(f"[PARSER-DEBUG]  - Promoting relationship for key '{key}'.")
-            proxy.add_relationship(rel_type, target_proxy.fn_uuid)
+            relationships[key] = target_proxy.path
             props_to_delete.append(key)
 
     print(f"[PARSER-DEBUG] Properties to delete for {proxy.path}: {props_to_delete}")
@@ -104,15 +100,25 @@ def main():
 
         # --- V18: Explicit Collection Linking for Objects---
         if isinstance(db, bpy.types.Object) and hasattr(db, 'users_collection'):
+            links = []
             added_root = False
             for coll in db.users_collection:
                 if coll in scene_collections:
                     if not added_root:
-                        proxy.add_relationship(RelationshipType.COLLECTION_LINK, root_proxy.fn_uuid)
+                        links.append('/root')
                         added_root = True
                 elif coll in db_to_proxy_map:
                     coll_proxy = db_to_proxy_map[coll]
-                    proxy.add_relationship(RelationshipType.COLLECTION_LINK, coll_proxy.fn_uuid)
+                    links.append(coll_proxy.path)
+            
+            if links:
+                rels = proxy.properties.setdefault('_fn_relationships', {})
+                # Preserve existing links if any, though this should be the primary source
+                existing_links = rels.get('collection_links', [])
+                for link in links:
+                    if link not in existing_links:
+                        existing_links.append(link)
+                rels['collection_links'] = existing_links
 
         # Set the final source info and deterministic UUID
         source_info = {
@@ -139,7 +145,11 @@ def main():
             if child_coll_db not in db_to_proxy_map: continue
             child_proxy = db_to_proxy_map[child_coll_db]
             
-            child_proxy.add_relationship(RelationshipType.COLLECTION_LINK, parent_proxy.fn_uuid)
+            rels = child_proxy.properties.setdefault('_fn_relationships', {})
+            links = rels.get('collection_links', [])
+            if parent_proxy.path not in links:
+                links.append(parent_proxy.path)
+            rels['collection_links'] = sorted(links)
 
     # Part B: Links from Scenes to top-level collections
     for scene_db in bpy.data.scenes:
@@ -149,7 +159,11 @@ def main():
             if top_level_coll not in db_to_proxy_map: continue
             child_proxy = db_to_proxy_map[top_level_coll]
 
-            child_proxy.add_relationship(RelationshipType.COLLECTION_LINK, root_proxy.fn_uuid)
+            rels = child_proxy.properties.setdefault('_fn_relationships', {})
+            links = rels.get('collection_links', [])
+            if '/root' not in links:
+                links.append('/root')
+            rels['collection_links'] = sorted(links)
 
     # --- V17.7: Reorder properties for easier debugging ---
     for proxy in root_proxy.get_flat_list():

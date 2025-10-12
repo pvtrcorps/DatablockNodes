@@ -9,7 +9,7 @@ generator nodes and importers produce consistent scene structures.
 
 
 from . import state_manager
-from .proxy_types import DatablockProxy, RelationshipType
+from .proxy_types import DatablockProxy
 from .engine import constants
 
 class SceneAssembler:
@@ -85,8 +85,8 @@ class SceneAssembler:
         object_proxy = self.add_proxy(object_name, "OBJECT", fn_uuid=object_uuid)
 
         # Create the relationship between the object and its data.
-        object_proxy.clear_relationships(RelationshipType.OBJECT_DATA)
-        object_proxy.add_relationship(RelationshipType.OBJECT_DATA, data_proxy.fn_uuid)
+        rels = object_proxy.properties.setdefault('_fn_relationships', {})
+        rels['data'] = data_proxy.path
 
         # V17.11: Explicitly link the new object to the scene collection by default.
         self.link_to_scene_collection(object_proxy)
@@ -98,7 +98,10 @@ class SceneAssembler:
         Adds a relationship to ensure that a proxy (object or collection) is
         linked to the scene's master collection.
         """
-        proxy_to_link.add_relationship(RelationshipType.COLLECTION_LINK, self.root_proxy.fn_uuid)
+        rels = proxy_to_link.properties.setdefault('_fn_relationships', {})
+        links = rels.setdefault('collection_links', [])
+        if self.root_proxy.path not in links:
+            links.append(self.root_proxy.path)
 
     def get_root_proxy(self) -> DatablockProxy:
         """Returns the root proxy of the constructed scene tree."""

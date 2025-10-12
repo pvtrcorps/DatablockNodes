@@ -2,7 +2,7 @@ import bpy
 from ..nodes.base import FNBaseNode
 from ..sockets import FNSocketScene, FNSocketString
 from ..engine import utils, query_engine
-from ..proxy_types import DatablockProxy, RelationshipType
+from ..proxy_types import DatablockProxy
 from .. import logger
 
 class FN_set_collection(FNBaseNode, bpy.types.Node):
@@ -81,33 +81,39 @@ class FN_set_collection(FNBaseNode, bpy.types.Node):
                 collection_proxy.properties['name'] = name
 
                 # V17.10: Automatically link the new collection to the scene root to make it visible.
-                collection_proxy.add_relationship(RelationshipType.COLLECTION_LINK, new_scene_root.fn_uuid)
+                scene_collection_rels = collection_proxy.properties.setdefault('_fn_relationships', {})
+                scene_collection_links = scene_collection_rels.setdefault('collection_links', [])
+                if new_scene_root.path not in scene_collection_links:
+                    scene_collection_links.append(new_scene_root.path)
 
             # --- Membership Logic ---
             if self.mode in ['CREATE', 'ADD']:
                 if not collection_proxy: continue
                 for proxy in proxies_to_affect:
                     if proxy.properties.get('datablock_type') != 'OBJECT': continue
+                    relationships = proxy.properties.setdefault('_fn_relationships', {})
+                    links = relationships.setdefault('collection_links', [])
+                    
                     if self.link_mode == 'MOVE':
-                        proxy.clear_relationships(RelationshipType.COLLECTION_LINK)
-
-                    proxy.add_relationship(RelationshipType.COLLECTION_LINK, collection_proxy.fn_uuid)
-
+                        links.clear()
+                    
+                    if collection_path not in links:
+                        links.append(collection_path)
+            
             elif self.mode == 'REMOVE':
                 for proxy in proxies_to_affect:
                     if proxy.properties.get('datablock_type') != 'OBJECT': continue
-                    if not collection_proxy:
-                        continue
-                    proxy.remove_relationship(RelationshipType.COLLECTION_LINK, collection_proxy.fn_uuid)
+                    if '_fn_relationships' in proxy.properties and 'collection_links' in proxy.properties['_fn_relationships']:
+                        links = proxy.properties['_fn_relationships']['collection_links']
+                        if collection_path in links:
+                            links.remove(collection_path)
             
             # V17.13: Prune collection if it becomes orphaned after a REMOVE operation
             if self.mode == 'REMOVE' and collection_proxy:
                 is_used = False
-                target_uuid = str(collection_proxy.fn_uuid)
                 for proxy in new_scene_root.get_flat_list():
-                    if proxy.properties.get('datablock_type') != 'OBJECT':
-                        continue
-                    if any(rel.target_uuid == target_uuid for rel in proxy.get_relationships_by_type(RelationshipType.COLLECTION_LINK)):
+                    if proxy.properties.get('datablock_type') != 'OBJECT': continue
+                    if collection_path in proxy.properties.get('_fn_relationships', {}).get('collection_links', []):
                         is_used = True
                         break
                 if not is_used:

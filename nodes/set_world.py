@@ -2,7 +2,6 @@ import bpy
 from ..nodes.base import FNBaseNode
 from ..sockets import FNSocketScene, FNSocketString
 from ..engine import query_engine
-from ..proxy_types import RelationshipType
 from .. import logger
 
 class FN_set_world(FNBaseNode, bpy.types.Node):
@@ -36,7 +35,7 @@ class FN_set_world(FNBaseNode, bpy.types.Node):
         
         world_to_assign = world_proxies[0]
 
-        cloned_scene.clear_relationships(RelationshipType.SCENE_WORLD)
-        cloned_scene.add_relationship(RelationshipType.SCENE_WORLD, world_to_assign.fn_uuid)
+        rels = cloned_scene.properties.setdefault('_fn_relationships', {})
+        rels['world'] = world_to_assign.path
 
         return {self.outputs[0].identifier: cloned_scene}

@@ -1,6 +1,5 @@
 from collections import deque
 from .. import logger
-from ..proxy_types import RelationshipType
 
 def plan_execution(root_proxy):
     """
@@ -13,7 +12,6 @@ def plan_execution(root_proxy):
     # 1. Flatten the tree into a list and a map for easy lookup
     all_proxies = root_proxy.get_flat_list()
     proxy_map = {p.path: p for p in all_proxies}
-    uuid_map = {str(p.fn_uuid): p for p in all_proxies}
 
     # 2. Build the dependency graph and in-degree map
     adj = {p.path: [] for p in all_proxies}
@@ -26,29 +24,31 @@ def plan_execution(root_proxy):
             in_degree[proxy.path] += 1
 
         # Relationship dependencies
-        for relationship in proxy.get_relationships():
-            target_proxy = uuid_map.get(relationship.target_uuid)
-            if not target_proxy:
-                continue
+        if '_fn_relationships' in proxy.properties:
+            for rel_type, target_value in proxy.properties['_fn_relationships'].items():
+                # The target can be a single path (string) or a list of paths
+                target_paths = target_value if isinstance(target_value, list) else [target_value]
 
-            # Skip explicit parent relationships; the hierarchy already encodes them.
-            if relationship.type == RelationshipType.PARENT:
-                continue
+                for target_path in target_paths:
+                    if target_path in proxy_map:
+                        target_proxy = proxy_map[target_path]
+                        
+                        # V17.5 Cycle-Breaker: If the target of a relationship is a descendant of the
+                        # current proxy (e.g., a Scene pointing to a Camera inside it), this is a
+                        # 'soft' dependency. We don't add it to the creation graph to prevent cycles.
+                        # The materializer will handle applying this property after creation.
+                        if target_proxy.is_ancestor(proxy):
+                            logger.log(f"[Planner] Ignoring soft dependency to prevent cycle: {proxy.path} -> {target_path}")
+                            continue
 
-            if target_proxy.is_ancestor(proxy):
-                logger.log(
-                    f"[Planner] Ignoring soft dependency to prevent cycle: {proxy.path} -> {target_proxy.path}"
-                )
-                continue
+                        # V17.6 Self-Dependency Check (for Grease Pencil)
+                        if proxy == target_proxy:
+                            logger.log(f"[Planner] Ignoring self-dependency to prevent cycle: {proxy.path} -> {target_path}")
+                            continue
 
-            if proxy == target_proxy:
-                logger.log(
-                    f"[Planner] Ignoring self-dependency to prevent cycle: {proxy.path} -> {target_proxy.path}"
-                )
-                continue
-
-            adj[target_proxy.path].append(proxy.path)
-            in_degree[proxy.path] += 1
+                        # The current proxy depends on the target of the relationship (a 'hard' dependency)
+                        adj[target_path].append(proxy.path)
+                        in_degree[proxy.path] += 1
 
     # 3. Kahn's Algorithm for Topological Sort
     logger.log(f"[Planner-Debug] --- Dependency Graph ---")

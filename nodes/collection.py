@@ -1,7 +1,7 @@
 import bpy
 from ..nodes.base import FNBaseNode
 from ..sockets import FNSocketScene, FNSocketString
-from ..proxy_types import DatablockProxy, RelationshipType
+from ..proxy_types import DatablockProxy
 
 class FN_collection(FNBaseNode, bpy.types.Node):
     bl_idname = "FN_collection"
@@ -28,6 +28,8 @@ class FN_collection(FNBaseNode, bpy.types.Node):
         collection_proxy.properties['datablock_type'] = 'COLLECTION'
         collection_proxy.properties['name'] = collection_name
         collection_proxy.properties['is_default_collection_prim'] = True # For easy finding
-        collection_proxy.add_relationship(RelationshipType.COLLECTION_LINK, root_proxy.fn_uuid)
+        collection_proxy.properties['_fn_relationships'] = {
+            'collection_links': [scene_path]
+        }
 
         return {self.outputs[0].identifier: root_proxy}

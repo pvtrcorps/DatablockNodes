@@ -7,7 +7,7 @@ parsing an FNQuery string and filtering a DatablockProxy tree based on its rules
 
 import fnmatch
 import re
-from ..proxy_types import DatablockProxy, RelationshipType, resolve_relationship_type
+from ..proxy_types import DatablockProxy
 from .. import logger
 from . import constants
 
@@ -19,27 +19,19 @@ _LOWERCASE_TYPE_MAP = {k.lower(): v for k, v in constants.BLENDER_TO_FN_TYPE.ite
 
 FILTER_PARSER_REGEX = re.compile(r"([\w\.]+)\s*(!=|>=|<=|in|=|>|<)\s*(.*)")
 
-def _get_nested_property(proxy: DatablockProxy, key: str, proxy_map: dict, uuid_map: dict):
+def _get_nested_property(proxy: DatablockProxy, key: str, proxy_map: dict):
     """Safely gets a value from a proxy's properties, handling nested and relational keys."""
     try:
         if '.' in key:
             parts = key.split('.', 1)
             rel_name = parts[0]
             rel_target_key = parts[1]
-            rel_type = resolve_relationship_type(rel_name)
-            if not rel_type:
-                return None
-            relationships = proxy.get_relationships_by_type(rel_type)
-            if not relationships:
-                return None
-            for relationship in relationships:
-                target_proxy = uuid_map.get(relationship.target_uuid)
-                if not target_proxy:
-                    continue
-                value = _get_nested_property(target_proxy, rel_target_key, proxy_map, uuid_map)
-                if value is not None:
-                    return value
-            return None
+            relationships = proxy.properties.get('_fn_relationships', {})
+            rel_path = relationships.get(rel_name)
+            if not rel_path: return None
+            target_proxy = proxy_map.get(rel_path)
+            if not target_proxy: return None
+            return _get_nested_property(target_proxy, rel_target_key, proxy_map)
         
         if key == 'type':
             raw_type = proxy.properties.get('datablock_type')
@@ -70,7 +62,6 @@ def execute_query(root_proxy: DatablockProxy, query_string: str) -> list[Datablo
     final_results = {}
     all_proxies = root_proxy.get_flat_list()
     proxy_map = {p.path: p for p in all_proxies}
-    uuid_map = {str(p.fn_uuid): p for p in all_proxies}
 
     for part in query_parts:
         part = part.strip()
@@ -107,29 +98,26 @@ def execute_query(root_proxy: DatablockProxy, query_string: str) -> list[Datablo
                 val_str = val_str.strip('\'"')
 
                 if key == 'member_of':
-                    collection_relationships = proxy.get_relationships_by_type(RelationshipType.COLLECTION_LINK)
+                    collection_links = proxy.properties.get('_fn_relationships', {}).get('collection_links', [])
                     target_cols = execute_query(root_proxy, val_str)
-                    target_col_uuids = {str(p.fn_uuid) for p in target_cols}
-
-                    if op == '=' and not any(rel.target_uuid in target_col_uuids for rel in collection_relationships):
+                    target_col_paths = {p.path for p in target_cols}
+                    
+                    if op == '=' and not any(p in collection_links for p in target_col_paths):
                         all_filters_match = False
                     elif op == 'in':
                         found = False
-                        for relationship in collection_relationships:
-                            curr = uuid_map.get(relationship.target_uuid)
+                        for col_path in collection_links:
+                            curr = proxy_map.get(col_path)
                             while curr:
-                                if str(curr.fn_uuid) in target_col_uuids:
-                                    found = True
-                                    break
+                                if curr.path in target_col_paths: found = True; break
                                 curr = curr.parent
-                            if found:
-                                break
+                            if found: break
                         if not found: all_filters_match = False
-
+                    
                     if not all_filters_match: break
                     continue
 
-                proxy_val = _get_nested_property(proxy, key, proxy_map, uuid_map)
+                proxy_val = _get_nested_property(proxy, key, proxy_map)
                 if proxy_val is None: 
                     all_filters_match = False
                     break

@@ -38,7 +38,7 @@ The central data structure. It is a Python class (`proxy_types.py`) that acts as
         -   `{'type': 'procedural'}`: Created by a generator node (e.g., `Create Object`).
         -   `{'type': 'file', ...}`: Imported from a `.blend` file via the `Import` node.
     -   **`_fn_globals` (dict):** On root proxies only. Holds scene-wide properties (e.g., render settings).
-    -   **`_fn_relationships` (list[Relationship]):** Stores typed connections to other proxies. Each `Relationship` records a `RelationshipType` (e.g., `OBJECT_DATA`, `COLLECTION_LINK`) and the target proxy's UUID.
+    -   **`_fn_relationships` (dict):** Stores all connections to other proxies. Keys include `data`, `collection_links`, `active_material`, `camera`, `world`. The values are typically paths to the target proxies.
 -   **`parent`, `children`:** Defines the direct transformation hierarchy.
 
 ---
@@ -73,7 +73,7 @@ The `materialize_plan` function in `engine/materializer.py` is the heart of the 
 -   **Phase 3: State Application:**
     - This is a loop through the entire plan, now that all datablocks exist in Blender. For each datablock, the following strict order is applied:
         1.  **Apply Base Properties:** Set all simple properties from `proxy.properties`.
-        2.  **Establish Relationships:** Set all typed relationships declared on the proxy (parenting, collection links, material links, etc.). This happens *before* snapshotting.
+        2.  **Establish Relationships:** Set all relationships from `_fn_relationships` (parenting, collection links, material links, etc.). This happens *before* snapshotting.
         3.  **Snapshot Initial State:** Capture the final procedural state.
         4.  **Apply User Overrides:** Apply any stored overrides on top.
 

@@ -2,7 +2,6 @@ import bpy
 from ..nodes.base import FNBaseNode
 from ..sockets import FNSocketScene, FNSocketString
 from ..engine import query_engine
-from ..proxy_types import RelationshipType
 from .. import logger
 
 class FN_set_material(FNBaseNode, bpy.types.Node):
@@ -43,7 +42,7 @@ class FN_set_material(FNBaseNode, bpy.types.Node):
         for obj_proxy in target_objects:
             if obj_proxy.properties.get('datablock_type') != 'OBJECT':
                 continue
-            obj_proxy.clear_relationships(RelationshipType.ACTIVE_MATERIAL)
-            obj_proxy.add_relationship(RelationshipType.ACTIVE_MATERIAL, material_to_assign.fn_uuid)
+            rels = obj_proxy.properties.setdefault('_fn_relationships', {})
+            rels['active_material'] = material_to_assign.path
 
         return {self.outputs[0].identifier: cloned_scene}
