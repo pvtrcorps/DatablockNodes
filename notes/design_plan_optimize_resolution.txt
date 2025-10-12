@@ -1,0 +1,34 @@
+Objective:
+Decouple relationship resolution from string-based paths and move to a direct UUID-based lookup system. This improves robustness and efficiency, especially in large and complex scenes.
+
+Prerequisites:
+This plan is best implemented *after* or *in conjunction with* the "Standardize Relationships" plan, as it assumes that `Relationship` objects with a `target_uuid` attribute are in use.
+
+---
+**Step-by-step Implementation Plan:**
+
+1.  **Enhance the `Planner` Output:**
+    a.  In `engine/planner.py`, after the `Planner` generates the flat, sorted list of proxies, it will also create a comprehensive `uuid_to_proxy_map`.
+        ```python
+        # In Planner.plan_execution, after flattening the tree
+        flat_proxies = root_proxy.get_flat_list()
+        uuid_to_proxy_map = {str(p.fn_uuid): p for p in flat_proxies}
+        ```
+    b.  The `plan_execution` method will now return not just the sorted list of proxies, but also this `uuid_to_proxy_map`.
+
+2.  **Update the `Orchestrator` and `Materializer`:**
+    a.  The `Orchestrator` will receive the `uuid_to_proxy_map` from the `Planner` and pass it down to the `materialize_plan` function.
+    b.  The `Materializer` currently creates its own `proxy_map` based on paths. This map can be eliminated for relationship lookups.
+
+3.  **Refactor Relationship Resolution in `Materializer.py`:**
+    a.  When the `Materializer` processes a `Relationship` object, it needs to find the target Blender datablock.
+    b.  The current method is already efficient: `uuid_manager.find_datablock_by_uuid(relationship.target_uuid)`. This part remains unchanged.
+    c.  However, if the `Materializer` ever needs to access the *target proxy* itself (for example, to read a property from it during relationship setup), the lookup will now be an instantaneous O(1) operation using the `uuid_to_proxy_map` passed from the `Planner`, instead of a string search by path.
+
+4.  **Confirm Node Implementations:**
+    a.  Ensure that all nodes creating `Relationship` objects are correctly populating the `target_uuid` field from the input proxies. This should be a natural consequence of implementing the "Standardize Relationships" plan.
+
+**Benefits:**
+-   **Robustness:** UUIDs are the single source of truth for identity. Relying on them instead of mutable paths makes the system less brittle.
+-   **Efficiency:** All proxy-to-proxy lookups become O(1) dictionary lookups.
+-   **Code Clarity:** Removes the need to manage and pass around path-based maps for relationship resolution, simplifying the Materializer's logic.

@@ -10,7 +10,10 @@ def _draw_value_socket(sock, layout, text, icon='NONE'):
 
     if sock.is_output:
         row = layout.row(align=True)
-        row.label(text=text or sock.name)
+        # V18.1: Only draw the label for non-scene sockets to keep the UI clean.
+        if not is_scene_socket:
+            row.label(text=text or sock.name)
+
         if icon != 'NONE':
             row.label(text="", icon=icon)
         # The activation button is only shown on the main scene socket
@@ -20,9 +23,11 @@ def _draw_value_socket(sock, layout, text, icon='NONE'):
                 icon_to_use = 'RECORD_ON'
             elif sock.is_active:
                 icon_to_use = 'RADIOBUT_ON'
-            op = row.operator("fn.activate_socket", text="", icon=icon_to_use, emboss=False)
-            op.node_id = sock.node.fn_node_id
-            op.socket_identifier = sock.identifier
+            # V18.2: Add a check to ensure the node is one of ours before trying to access fn_node_id.
+            if hasattr(sock.node, 'fn_node_id'):
+                op = row.operator("fn.activate_socket", text="", icon=icon_to_use, emboss=False)
+                op.node_id = sock.node.fn_node_id
+                op.socket_identifier = sock.identifier
     elif sock.is_linked:
         layout.label(text=text or sock.name, icon=icon)
     else:
@@ -51,16 +56,31 @@ class FN_SocketBase(bpy.types.NodeSocket):
         # Default color, can be overridden by specific socket types
         return (0.8, 0.8, 0.8, 1.0)
 
-# --- Value Sockets (Unchanged) ---
-class FNSocketString(FN_SocketBase): bl_idname='FNSocketString'; bl_label="String"; default_value:bpy.props.StringProperty(); draw_color=lambda s,c,n: _color(0.31,0.66,1.0)
-class FNSocketInt(FN_SocketBase): bl_idname='FNSocketInt'; bl_label="Integer"; default_value:bpy.props.IntProperty(); draw_color=lambda s,c,n: _color(0.17,0.63,0.40)
-class FNSocketFloat(FN_SocketBase): bl_idname='FNSocketFloat'; bl_label="Float"; default_value:bpy.props.FloatProperty(); draw_color=lambda s,c,n: _color(0.77,0.77,0.77)
-class FNSocketBool(FN_SocketBase): bl_idname='FNSocketBool'; bl_label="Boolean"; default_value:bpy.props.BoolProperty(); draw_color=lambda s,c,n: _color(1.0,0.41,0.86)
-class FNSocketVector(FN_SocketBase): bl_idname='FNSocketVector'; bl_label="Vector"; default_value:bpy.props.FloatVectorProperty(size=3); draw_color=lambda s,c,n: _color(0.38,0.38,0.78)
-class FNSocketColor(FN_SocketBase): bl_idname='FNSocketColor'; bl_label="Color"; default_value:bpy.props.FloatVectorProperty(size=4,subtype='COLOR'); draw_color=lambda s,c,n: _color(0.8,0.8,0.2)
-class FNSocketPulse(FN_SocketBase): bl_idname = "FNSocketPulse"; bl_label = "Pulse"; default_value: bpy.props.BoolProperty(default=False); draw_color=lambda s,c,n: (0.0, 0.0, 0.0, 1.0)
+# --- V18: New Base Class for Value Sockets with custom UI ---
+class FN_SocketValueBase(FN_SocketBase):
+    """Base class for value sockets to provide custom drawing for unconnected inputs."""
 
-# --- V6 Core Sockets ---
+    def draw(self, context, layout, node, text):
+        # If the socket is an input and is not connected, draw it with a standard label.
+        if not self.is_output and not self.is_linked:
+            # After investigation, dynamically setting placeholder text is not feasible due to API
+            # limitations (property names are read-only after registration). The clearest and most
+            # robust solution is to display the socket name as a standard external label.
+            layout.prop(self, 'default_value', text=text)
+        else:
+            # For all other cases (outputs, connected inputs), use the standard helper.
+            _draw_value_socket(self, layout, text, self.bl_icon if hasattr(self, 'bl_icon') else 'NONE')
+
+# --- Value Sockets (Unchanged) ---
+class FNSocketString(FN_SocketValueBase): bl_idname='FNSocketString'; bl_label="String"; default_value:bpy.props.StringProperty(); draw_color=lambda s,c,n: _color(0.4,0.4,0.4)
+class FNSocketInt(FN_SocketValueBase): bl_idname='FNSocketInt'; bl_label="Integer"; default_value:bpy.props.IntProperty(); draw_color=lambda s,c,n: _color(0.17,0.63,0.40)
+class FNSocketFloat(FN_SocketValueBase): bl_idname='FNSocketFloat'; bl_label="Float"; default_value:bpy.props.FloatProperty(); draw_color=lambda s,c,n: _color(0.77,0.77,0.77)
+class FNSocketBool(FN_SocketValueBase): bl_idname='FNSocketBool'; bl_label="Boolean"; default_value:bpy.props.BoolProperty(); draw_color=lambda s,c,n: _color(1.0,0.41,0.86)
+class FNSocketVector(FN_SocketValueBase): bl_idname='FNSocketVector'; bl_label="Vector"; default_value:bpy.props.FloatVectorProperty(size=3); draw_color=lambda s,c,n: _color(0.38,0.38,0.78)
+class FNSocketColor(FN_SocketValueBase): bl_idname='FNSocketColor'; bl_label="Color"; default_value:bpy.props.FloatVectorProperty(size=4,subtype='COLOR'); draw_color=lambda s,c,n: _color(0.8,0.8,0.2)
+class FNSocketPulse(FN_SocketValueBase): bl_idname = "FNSocketPulse"; bl_label = "Pulse"; default_value: bpy.props.BoolProperty(default=False); draw_color=lambda s,c,n: (0.0, 0.0, 0.0, 1.0)
+
+# --- Core Sockets ---
 class FNSocketScene(FN_SocketBase): 
     bl_idname="FNSocketScene"
     bl_label="Scene"
@@ -75,37 +95,19 @@ class FNSocketSceneList(FN_SocketBase):
     def draw_color(self, context, node):
         return _color(0.9, 0.9, 0.9)
 
-class FNSocketSelection(FN_SocketBase):
-    bl_idname="FNSocketSelection"
-    bl_label="Selection"
-
-    def draw_color(self, context, node):
-        return _color(0.2, 0.2, 0.2)
-
-# --- Legacy Pointer & List Sockets (To be phased out, kept for now to avoid breaking old files) ---
-class FNSocketObject(FN_SocketBase): bl_idname='FNSocketObject'; bl_label="Object"; value:bpy.props.PointerProperty(type=bpy.types.Object); draw_color=lambda s,c,n: _color(0.96,0.55,0.08)
-class FNSocketCollection(FN_SocketBase): bl_idname='FNSocketCollection'; bl_label="Collection"; value:bpy.props.PointerProperty(type=bpy.types.Collection); draw_color=lambda s,c,n: _color(0.8,0.8,0.8)
-# Note: The old FNSocketScene is now a legacy pointer socket. The new one is FNSocketScene.
-class FNSocketScenePointer(FN_SocketBase): bl_idname='FNSocketScenePointer'; bl_label="Scene Pointer"; value:bpy.props.PointerProperty(type=bpy.types.Scene); draw_color=lambda s,c,n: _color(1.0,1.0,1.0)
-class FNSocketMaterial(FN_SocketBase): bl_idname='FNSocketMaterial'; bl_label="Material"; value:bpy.props.PointerProperty(type=bpy.types.Material); draw_color=lambda s,c,n: _color(0.88,0.31,0.31)
-class FNSocketObjectList(FN_SocketBase): bl_idname="FNSocketObjectList"; bl_label="Object List"; draw_color=lambda s,c,n: _color(0.96,0.55,0.08)
-class FNSocketCollectionList(FN_SocketBase): bl_idname="FNSocketCollectionList"; bl_label="Collection List"; draw_color=lambda s,c,n: _color(0.8,0.8,0.8)
-
 
 # --- Registration ---
 _all_sockets = (
-    # V6 Sockets
+    # Sockets
     FNSocketScene,
     FNSocketSceneList,
-    FNSocketSelection,
+    
     
     # Value Sockets
     FNSocketString, FNSocketInt, FNSocketFloat, FNSocketBool, FNSocketVector, FNSocketColor,
     FNSocketPulse,
     
-    # Legacy Sockets (for file compatibility)
-    FNSocketObject, FNSocketCollection, FNSocketScenePointer, FNSocketMaterial,
-    FNSocketObjectList, FNSocketCollectionList,
+
 )
 
 def register():

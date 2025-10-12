@@ -17,7 +17,7 @@ def _populate_cache():
     if _CACHE_POPULATED:
         return
 
-    logger.log("[UUID_MANAGER] Cache is cold. Populating...")
+    # logger.log("[UUID_MANAGER] Cache is cold. Populating...")
     _UUID_CACHE.clear()
     for collection in (bpy.data.objects, bpy.data.scenes, bpy.data.materials, 
                        bpy.data.meshes, bpy.data.collections, bpy.data.cameras, 
@@ -29,7 +29,7 @@ def _populate_cache():
             if uuid_val:
                 _UUID_CACHE[uuid_val] = datablock
     _CACHE_POPULATED = True
-    logger.log(f"[UUID_MANAGER] Cache populated with {len(_UUID_CACHE)} items.")
+    # logger.log(f"[UUID_MANAGER] Cache populated with {len(_UUID_CACHE)} items.")
 
 def get_uuid(datablock):
     """Get the File Nodes UUID for a given datablock."""
@@ -56,7 +56,7 @@ def set_uuid(datablock, target_uuid=None, force_new=False):
     if new_uuid:
         datablock[FN_UUID_PROPERTY] = new_uuid
         register_datablock(datablock, new_uuid)
-        logger.log(f"[UUID_MANAGER] Set UUID {new_uuid} for '{datablock.name}' and cached.")
+        # logger.log(f"[UUID_MANAGER] Set UUID {new_uuid} for '{datablock.name}' and cached.")
         return new_uuid
     
     return get_uuid(datablock)

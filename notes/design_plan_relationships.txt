@@ -1,0 +1,54 @@
+Objective:
+Replace the current ad-hoc, string-based dictionary in `_fn_relationships` with a standardized, type-safe structure using dedicated classes. This will make the system more robust, readable, and scalable.
+
+Prerequisites: None. This is a foundational change.
+
+---
+**Step-by-step Implementation Plan:**
+
+1.  **Modify `proxy_types.py`:**
+    a.  Create a new `Enum` for relationship types:
+        ```python
+        from enum import Enum, auto
+
+        class RelationshipType(Enum):
+            PARENT = auto()
+            OBJECT_DATA = auto()
+            COLLECTION_LINK = auto()
+            ACTIVE_MATERIAL = auto()
+            SCENE_CAMERA = auto()
+            SCENE_WORLD = auto()
+        ```
+    b.  Create a new `dataclass` for the relationship structure:
+        ```python
+        from dataclasses import dataclass, field
+        from typing import List
+
+        @dataclass
+        class Relationship:
+            type: RelationshipType
+            target_uuid: str
+        ```
+    c.  Modify the `DatablockProxy` class. The `_fn_relationships` property will now be expected to hold a list of `Relationship` objects.
+
+2.  **Update Node Implementations:**
+    a.  Go through every node that creates a relationship (e.g., `parent.py`, `set_collection.py`, `set_material.py`, `scene.py`).
+    b.  In the `execute` method of each node, instead of adding a string key/value to the proxy's `properties['_fn_relationships']`, they will now:
+        i.   Get the `fn_uuid` from the target proxy received through an input socket.
+        ii.  Instantiate a `Relationship` object, e.g., `Relationship(type=RelationshipType.PARENT, target_uuid=parent_proxy.fn_uuid)`.
+        iii. Add this object to a list within the output proxy's `properties['_fn_relationships']`.
+
+3.  **Refactor `engine/planner.py`:**
+    a.  The dependency graph logic currently checks for specific string keys in `_fn_relationships`.
+    b.  This will be updated to iterate through the list of `Relationship` objects. For each object, it will create a dependency edge from the current proxy to the proxy identified by `relationship.target_uuid`.
+
+4.  **Refactor `engine/materializer.py`:**
+    a.  This is the main benefit. The long, fragile `if/elif` chain that handles different relationship strings will be removed.
+    b.  It will be replaced by a single loop that iterates through the proxy's list of `Relationship` objects.
+    c.  Inside the loop, a `match/case` block (or `if/elif`) on `relationship.type` will determine the specific action to take (e.g., `case RelationshipType.PARENT: datablock.parent = ...`).
+    d.  The target Blender datablock for the relationship will be retrieved using `uuid_manager.find_datablock_by_uuid(relationship.target_uuid)`, which is highly efficient.
+
+**Benefits:**
+-   **Type Safety:** Eliminates errors from typos in string keys.
+-   **Readability:** The code becomes self-documenting.
+-   **Scalability:** Adding a new relationship type becomes trivial: just add a new value to the `Enum` and a new `case` in the Materializer's loop.

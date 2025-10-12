@@ -1,12 +1,13 @@
 import bpy
 from ..nodes.base import FNBaseNode
-from ..sockets import FNSocketScene, FNSocketSelection
-from ..engine import utils
-from ..query_types import FNSelectionQuery
+from ..sockets import FNSocketScene, FNSocketString
+from ..engine import query_engine
+from .. import logger
 
 class FN_prune(FNBaseNode, bpy.types.Node):
     """
-    Removes branches from the scene graph based on a Selection.
+    Removes branches from the scene graph based on a query,
+    intelligently removing any orphaned data-blocks.
     """
     bl_idname = "FN_prune"
     bl_label = "Prune"
@@ -14,34 +15,32 @@ class FN_prune(FNBaseNode, bpy.types.Node):
     def init(self, context):
         FNBaseNode.init(self, context)
         self.inputs.new('FNSocketScene', "Scene")
-        self.inputs.new('FNSocketSelection', "Selection")
+        self.inputs.new('FNSocketString', "Selection")
         self.outputs.new('FNSocketScene', "Scene")
 
     def execute(self, **kwargs):
         scene_root = kwargs.get("Scene")
-        selection_query = kwargs.get("Selection")
+        selection_string = kwargs.get("Selection")
 
         if not scene_root:
             return {self.outputs[0].identifier: scene_root}
 
-        # If no selection is provided, create a query that selects everything.
-        if not selection_query:
-            selection_query = FNSelectionQuery(raw_expression="*", path_glob="*", filters=[])
+        if not selection_string:
+            logger.log("[PruneNode] No selection provided. Passing scene through untouched.")
+            return {self.outputs[0].identifier: scene_root}
 
-        # Clone the scene to work on a copy
+        # Clone the scene to work on a non-destructive copy
         new_scene_root = scene_root.clone()
 
-        # Resolve the selection to get the target prims
-        prims_to_prune = utils.resolve_selection(new_scene_root, selection_query)
+        # Use the new query engine to get the target proxies
+        proxies_to_prune = query_engine.execute_query(new_scene_root, selection_string)
 
-        for prim in prims_to_prune:
-            if prim.parent:
-                # It's crucial to remove from the cloned parent in the new scene graph
-                try:
-                    prim.parent.children.remove(prim)
-                except ValueError:
-                    # This can happen if a parent of a selected prim was also pruned.
-                    # It's safe to ignore.
-                    pass
+        if proxies_to_prune:
+            logger.log(f"[PruneNode] Pruning {len(proxies_to_prune)} proxies matching '{selection_string}'.")
+
+        for proxy in proxies_to_prune:
+            # The prune method on the proxy handles detaching from the parent
+            # and cleaning up any orphaned dependencies.
+            proxy.prune()
 
         return {self.outputs[0].identifier: new_scene_root}

@@ -2,6 +2,8 @@ import bpy
 import json
 from . import logger, uuid_manager
 from .engine import utils
+# V17.6: Import the execution flag from the orchestrator to prevent self-triggering
+from .engine.orchestrator import _is_executing
 
 def _calculate_overrides(initial_state, current_state):
     """Compares two state dictionaries and returns a dict with only the differences."""
@@ -16,6 +18,14 @@ def _calculate_overrides(initial_state, current_state):
 
 @bpy.app.handlers.persistent
 def depsgraph_update_post_handler(scene, depsgraph):
+    # --- V17.6 Optimization: Prevent self-triggering ---
+    # If the engine is currently executing and materializing the scene, 
+    # we must not run the override handler. This prevents race conditions
+    # and infinite loops where the handler tries to process updates
+    # caused by the materializer itself.
+    if _is_executing:
+        return
+
     # Find the active node tree
     tree = next((nt for nt in bpy.data.node_groups if hasattr(nt, 'bl_idname') and nt.bl_idname == 'DatablockTreeType'), None)
     if not tree:
@@ -46,13 +56,14 @@ def depsgraph_update_post_handler(scene, depsgraph):
 
         # Get the current, evaluated state of the datablock
         evaluated_db = db.evaluated_get(depsgraph) if hasattr(db, 'evaluated_get') else db
-        current_state = utils.capture_initial_state(evaluated_db)
+        current_state = utils.capture_datablock_state(evaluated_db)
 
         # Calculate the difference
         overrides = _calculate_overrides(initial_state, current_state)
 
         if overrides:
             logger.log(f"[OverrideHandler] Detected {len(overrides)} overrides for {db.name} ({uuid_str})")
+            logger.log(f"[OverrideHandler] Overrides details: {json.dumps(overrides, indent=2)}")
             # Find or create an override entry
             override_entry = next((item for item in tree.fn_override_map if item.datablock_uuid == uuid_str), None)
             if not override_entry:

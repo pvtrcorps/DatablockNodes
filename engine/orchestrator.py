@@ -1,6 +1,6 @@
 import bpy
 from .. import logger, uuid_manager
-from . import planner, materializer
+from . import planner, materializer, utils, constants
 from ..proxy_types import DatablockProxy
 from ..properties import _datablock_creation_map
 
@@ -13,14 +13,16 @@ def _initialize_creation_map():
         _datablock_creation_map.update({
             'SCENE': bpy.data.scenes.new,
             'COLLECTION': bpy.data.collections.new,
-            'CAMERA': bpy.data.cameras.new,
-            'IMAGE': bpy.data.images.new,
-            'LIGHT': bpy.data.lights.new,
-            'MATERIAL': bpy.data.materials.new,
+            'OBJECT': bpy.data.objects.new, # For creating Empties or objects with data
             'MESH': bpy.data.meshes.new,
+            'CURVE': bpy.data.curves.new,
+            'LIGHT': bpy.data.lights.new,
+            'CAMERA': bpy.data.cameras.new,
+            'MATERIAL': bpy.data.materials.new,
             'WORLD': bpy.data.worlds.new,
             'ARMATURE': bpy.data.armatures.new,
             'ACTION': bpy.data.actions.new,
+            'IMAGE': bpy.data.images.new,
         })
 
 def execute_node_tree(tree, depsgraph):
@@ -37,7 +39,27 @@ def execute_node_tree(tree, depsgraph):
         _is_executing = False
 
 def _synchronize_blender_state(tree, plan: list, depsgraph, root_proxy):
+    # --- V17 Override System: Clear the ephemeral initial state map ---
+    # This ensures that we always capture a fresh snapshot of the node-defined state
+    # before applying any persistent user overrides.
+    logger.log("[Orchestrator] Clearing ephemeral initial state map for fresh snapshot.")
+    tree.fn_initial_state_map.clear()
+
+    # --- Scene Management ---
+    # The Orchestrator ensures the target Blender Scene exists.
+    # The Materializer will handle applying all its properties, just like any other datablock.
+    scene_db = uuid_manager.find_datablock_by_uuid(str(root_proxy.fn_uuid))
+    if not scene_db:
+        # Get the scene name from the proxy's own properties now
+        scene_name = root_proxy.properties.get('name', 'DatablockScene')
+        logger.log(f"No existing scene found for UUID {root_proxy.fn_uuid}. Creating new scene named '{scene_name}'.", level='INFO')
+        scene_db = bpy.data.scenes.new(scene_name)
+        uuid_manager.set_uuid(scene_db, str(root_proxy.fn_uuid))
+
+    # --- Datablock Pruning ---
     desired_uuids = {str(p.fn_uuid) for p in plan}
+    desired_uuids.add(str(root_proxy.fn_uuid)) # Keep the scene itself
+
     current_datablocks = uuid_manager.get_all_managed_datablocks()
     current_uuids = set(current_datablocks.keys())
 
@@ -45,19 +67,15 @@ def _synchronize_blender_state(tree, plan: list, depsgraph, root_proxy):
     
     if uuids_to_destroy:
         _destroy_datablocks_safely(uuids_to_destroy, current_datablocks)
-        # CRITICAL FIX: Invalidate the cache after destruction.
-        # This prevents the materializer from accessing stale, destroyed datablocks.
         uuid_manager.invalidate_cache()
 
-    # The materializer now handles all creation, configuration, and linking.
-    materializer.materialize_plan(plan, tree)
+    # --- Materialization ---
+    materializer.materialize_plan(plan, scene_db, tree)
     
     bpy.context.view_layer.update()
 
-    if root_proxy.properties.get('datablock_type') == 'SCENE':
-        scene_db = uuid_manager.find_datablock_by_uuid(str(root_proxy.fn_uuid))
-        if scene_db and bpy.context.window.scene != scene_db:
-            bpy.context.window.scene = scene_db
+    if bpy.context.window.scene != scene_db:
+        bpy.context.window.scene = scene_db
 
 def _destroy_datablocks_safely(uuids_to_destroy, all_managed_datablocks):
     """Destroys datablocks in a safe order to avoid ReferenceErrors."""
@@ -89,7 +107,7 @@ def _destroy_datablocks_safely(uuids_to_destroy, all_managed_datablocks):
             else:
                 partitions['OTHER'].append(db)
         except ReferenceError:
-            logger.log(f"[Orchestrator] WARNING: Could not access a datablock during partitioning. It may have been already deleted.")
+            logger.log(f"Could not access a datablock during partitioning. It may have been already deleted.", level='WARNING')
 
     # Destroy in a safe order: Content -> Containers
     for db in partitions['OBJECT']:
@@ -100,8 +118,9 @@ def _destroy_datablocks_safely(uuids_to_destroy, all_managed_datablocks):
     for db in partitions['DATA']:
         try:
             uuid_manager.unregister_datablock(db)
-            collection_name = db.bl_rna.identifier.lower() + 's'
-            if hasattr(bpy.data, collection_name):
+            fn_type = constants.BLENDER_TO_FN_TYPE.get(db.bl_rna.identifier)
+            collection_name = constants.FN_TYPE_TO_BLENDER_COLLECTION.get(fn_type) if fn_type else None
+            if collection_name and hasattr(bpy.data, collection_name):
                 getattr(bpy.data, collection_name).remove(db)
         except ReferenceError: pass
     for db in partitions['COLLECTION']:
@@ -117,8 +136,9 @@ def _destroy_datablocks_safely(uuids_to_destroy, all_managed_datablocks):
     for db in partitions['OTHER']:
         try:
             uuid_manager.unregister_datablock(db)
-            collection_name = db.bl_rna.identifier.lower() + 's'
-            if hasattr(bpy.data, collection_name):
+            fn_type = constants.BLENDER_TO_FN_TYPE.get(db.bl_rna.identifier)
+            collection_name = constants.FN_TYPE_TO_BLENDER_COLLECTION.get(fn_type) if fn_type else None
+            if collection_name and hasattr(bpy.data, collection_name):
                 getattr(bpy.data, collection_name).remove(db)
         except ReferenceError: pass
 

@@ -1,6 +1,8 @@
-# C:/Users/anton/Desktop/addon/addons/DatablockNodes/logger.py
 LOGGING_ENABLED = True
 
-def log(message):
+def log(message, level=None):
     if LOGGING_ENABLED:
-        print(f"[DatablockNodes] {message}")
+        if level:
+            print(f"[DatablockNodes] [{level.upper()}] {message}")
+        else:
+            print(f"[DatablockNodes] {message}")

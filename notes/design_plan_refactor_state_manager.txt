@@ -1,0 +1,42 @@
+Objective:
+Eliminate the `state_manager.py` file, which is a remnant of a previous design, and move its logic directly into the nodes that generate procedural datablocks. This simplifies the codebase and places logic where it is most relevant.
+
+Prerequisites: None. This is a self-contained refactoring task.
+
+---
+**Step-by-step Implementation Plan:**
+
+1.  **Analyze `state_manager.define_new_state`:**
+    a.  Document the default properties this function provides for each datablock type (e.g., default `location`/`rotation` for `OBJECT`, default `energy` for `LIGHT`).
+
+2.  **Move Logic into Generator Nodes:**
+    a.  Go to each node that creates a procedural datablock (`create_object.py`, `collection.py`, `scene.py`, etc.).
+    b.  In the `execute` method of each node, where the `DatablockProxy` is created, explicitly set the default properties that were previously handled by the `state_manager`.
+    c.  Example in `create_object.py`:
+        ```python
+        # old
+        # properties = state_manager.define_new_state(...)
+
+        # new
+        properties = {
+            'location': (0, 0, 0),
+            'rotation_euler': (0, 0, 0),
+            'scale': (1, 1, 1),
+            # ... other defaults
+        }
+        ```
+
+3.  **Update `scene_assembler.py`:**
+    a.  The `SceneAssembler` is the primary user of the `state_manager`.
+    b.  Modify its methods (like `add_proxy`) to remove the call to `state_manager.define_new_state`.
+    c.  The responsibility for defining the state will now fall to the caller of the `SceneAssembler`. This has no negative impact, as its main caller (`blend_parser`) immediately replaces the state with `utils.capture_datablock_state`.
+
+4.  **Perform Cleanup:**
+    a.  Delete the `state_manager.py` file from the project.
+    b.  Search the entire codebase for any remaining `import state_manager` statements and remove them.
+    c.  Remove the file from `__init__.py` if it's registered there for reload purposes.
+
+**Benefits:**
+-   **Reduced Complexity:** Fewer files and modules to understand and maintain.
+-   **Improved Cohesion:** Logic resides within the component that uses it (the node).
+-   **Clearer Data Flow:** It becomes explicit what the default state of a procedural proxy is.

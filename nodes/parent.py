@@ -1,7 +1,8 @@
 import bpy
 from ..nodes.base import FNBaseNode
-from ..sockets import FNSocketScene, FNSocketSelection
+from ..sockets import FNSocketScene, FNSocketString
 from .. import logger
+from ..engine import query_engine
 
 class FN_parent(FNBaseNode, bpy.types.Node):
     bl_idname = "FN_parent"
@@ -9,75 +10,62 @@ class FN_parent(FNBaseNode, bpy.types.Node):
 
     def init(self, context):
         FNBaseNode.init(self, context)
-        self.inputs.new('FNSocketScene', "Parent")
-        self.inputs.new('FNSocketSelection', "Selection")
+        self.inputs.new('FNSocketScene', "Scene")
+        self.inputs.new('FNSocketString', "Parent Selection")
         self.inputs.new('FNSocketScene', "Children")
         self.outputs.new('FNSocketScene', "Scene Out")
 
     def execute(self, **kwargs):
-        parent_scene = kwargs.get("Parent")
-        selection = kwargs.get("Selection")
+        scene = kwargs.get("Scene")
+        parent_selection_string = kwargs.get("Parent Selection")
         children_scene = kwargs.get("Children")
 
-        if not parent_scene or not parent_scene.children:
-            logger.log("[ParentNode] ERROR: 'Parent' scene is empty. Aborting.", level='ERROR')
-            return {self.outputs[0].identifier: parent_scene or children_scene}
+        if not scene:
+            logger.log("'Scene' input is not connected. Returning children if available.", level='ERROR')
+            return {self.outputs[0].identifier: children_scene}
         
         if not children_scene or not children_scene.children:
-            logger.log("[ParentNode] WARNING: 'Children' scene is empty. Nothing to parent.", level='WARNING')
-            return {self.outputs[0].identifier: parent_scene}
+            logger.log("'Children' scene is empty. Nothing to parent.", level='WARNING')
+            return {self.outputs[0].identifier: scene}
 
-        logger.log("[ParentNode] Initializing parent operation.")
+        if not parent_selection_string:
+            logger.log("'Parent Selection' is not defined. Aborting.", level='ERROR')
+            return {self.outputs[0].identifier: scene}
 
-        # 1. Clone the parent scene to avoid modifying it directly
-        new_scene = parent_scene.clone()
+        # 1. Clone the main scene to ensure a non-destructive workflow
+        new_scene = scene.clone()
         
-        # 2. Find the target parent proxy within the new scene
-        target_parent_proxy = None
-        if selection and selection.raw_expression:
-            # A selection is provided, try to find the parent with it.
-            logger.log(f"[ParentNode] Selection query received: '{selection.raw_expression}'")
-            # This is a simplified evaluation. A real implementation would be more complex.
-            # For now, we just look for the first prim whose path matches the glob.
-            # Note: This doesn't handle filters yet.
-            import fnmatch
-            all_prims = new_scene.get_flat_list()
-            found_path = None
-            for prim in all_prims:
-                if fnmatch.fnmatch(prim.path, selection.path_glob):
-                    found_path = prim.path
-                    break
-            
-            if found_path:
-                target_parent_proxy = new_scene.find_child_by_path(found_path)
+        # 2. Find the target parent proxy within the newly cloned scene using the query engine
+        potential_parents = query_engine.execute_query(new_scene, parent_selection_string)
+        if not potential_parents:
+            logger.log(f"Selection '{parent_selection_string}' did not match any proxies.", level='ERROR')
+            return {self.outputs[0].identifier: new_scene}
+        
+        # For parenting, we can only have one parent. We take the first result.
+        target_parent_proxy = potential_parents[0]
 
-            logger.log(f"[ParentNode] Using selection to find parent. Found: {target_parent_proxy.path if target_parent_proxy else 'None'}")
-        else:
-            # Fallback: We parent to the first object found under the root of the parent scene.
-            target_parent_proxy = next((p for p in new_scene.children if p.properties.get('datablock_type') == 'OBJECT'), None)
-            logger.log(f"[ParentNode] No selection provided. Falling back to first object: {target_parent_proxy.path if target_parent_proxy else 'None'}")
-
-        if not target_parent_proxy:
-            logger.log("[ParentNode] ERROR: No suitable object to parent to was found.", level='ERROR')
+        if target_parent_proxy.properties.get('datablock_type') != 'OBJECT':
+            logger.log(f"Target parent '{target_parent_proxy.path}' is not an OBJECT.", level='ERROR')
             return {self.outputs[0].identifier: new_scene}
 
-        # 3. Iterate over children of the incoming child scene and parent them
-        for child_to_parent_proxy in children_scene.children:
-            if child_to_parent_proxy.properties.get('datablock_type') != 'OBJECT':
-                continue # We only parent objects
+        # 3. Identify top-level OBJECT proxies in the 'Children' scene to be parented
+        child_objects_to_parent = []
+        for child_proxy in children_scene.children:
+            if child_proxy.properties.get('datablock_type') == 'OBJECT':
+                child_objects_to_parent.append(child_proxy)
+            # Also check one level deep for the common /<scene>/objects namespace
+            elif child_proxy.path.endswith("/objects"):
+                child_objects_to_parent.extend(child_proxy.children)
 
-            logger.log(f"[ParentNode] Parenting proxy '{child_to_parent_proxy.path}' under '{target_parent_proxy.path}'.")
+        if not child_objects_to_parent:
+            logger.log("No top-level OBJECT proxies found in 'Children' scene to parent.", level='WARNING')
+            return {self.outputs[0].identifier: new_scene}
 
-            # 4. Clone the child proxy and its entire hierarchy
-            cloned_child = child_to_parent_proxy.clone()
+        logger.log(f"[ParentNode] Parenting {len(child_objects_to_parent)} proxies to '{target_parent_proxy.path}'.")
 
-            # 5. Re-path the cloned child to its new location
-            original_path = cloned_child.path
-            cloned_child.repath(target_parent_proxy.path)
-            logger.log(f"[ParentNode] Path re-written from '{original_path}' to '{cloned_child.path}'.")
-
-            # 6. Add the re-pathed child to the parent's children list
-            cloned_child.parent = target_parent_proxy
-            target_parent_proxy.children.append(cloned_child)
+        # 4. Execute the reparent operation for each child
+        for child_to_reparent in child_objects_to_parent:
+            # The reparent method handles cloning, repathing, and dependency transfer.
+            child_to_reparent.reparent(target_parent_proxy)
 
         return {self.outputs[0].identifier: new_scene}

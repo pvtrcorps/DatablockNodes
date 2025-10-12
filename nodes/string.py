@@ -14,7 +14,7 @@ class FN_string(FNBaseNode, bpy.types.Node):
 
     def init(self, context):
         FNBaseNode.init(self, context)
-        self.outputs.new('FNSocketString', "Value")
+        self.outputs.new('FNSocketString', "")
 
     def draw_buttons(self, context, layout):
         layout.prop(self, "value", text="")

@@ -1,163 +1,238 @@
 import bpy
 import json
+from collections import defaultdict
 from .. import logger, uuid_manager
 from ..properties import _datablock_creation_map
-from . import utils
+from . import utils, constants
 
-def materialize_plan(plan: list, tree: bpy.types.NodeTree):
-    """
-    Materializes the scene graph from a dependency-sorted plan.
-    This process now includes applying base properties, saving an initial state snapshot,
-    and applying any user overrides.
-    """
-    logger.log("--- Materializer V11: Processing dependency-sorted plan ---")
+def materialize_plan(plan: list, target_scene: bpy.types.Scene, tree: bpy.types.NodeTree):
+    logger.log(f"--- Materializer V15: Processing plan for target scene ''{target_scene.name}'' ---")
     
-    # --- Pass 1: Creation ---
-    logger.log("[Materializer-P1] Starting Creation Pass")
+    # --- Phase 1: Pre-Materialization (Analysis and Grouping) ---
+    # logger.log("[Materializer-P0] Starting Pre-Materialization Analysis")
+    
+    append_map = defaultdict(lambda: defaultdict(list))
+    procedural_proxies = []
+    
     for proxy in plan:
-        if uuid_manager.find_datablock_by_uuid(str(proxy.fn_uuid)):
-            logger.log(f"[Materializer-P1] Skipping existing datablock for {proxy.path}")
-            continue
+        source_info = proxy.properties.get('_fn_source')
+        db_type = proxy.properties.get('datablock_type')
 
+        if source_info and source_info.get('type') == 'file':
+            if uuid_manager.find_datablock_by_uuid(str(proxy.fn_uuid)):
+                continue
+
+            if db_type == 'SCENE':
+                continue
+
+            filepath = source_info['filepath']
+            db_name = source_info.get('datablock_name')
+
+            if not db_type or not db_name:
+                continue
+
+            db_type_plural = constants.FN_TYPE_TO_BLENDER_COLLECTION.get(db_type)
+            if not db_type_plural:
+                continue
+            append_map[filepath][db_type_plural].append(db_name)
+        
+        elif db_type: # It's a procedural proxy if it has a type but isn't from a file
+            procedural_proxies.append(proxy)
+
+    # --- Phase 2: The Append/Create Pass ---
+    # logger.log("[Materializer-P1] Starting Append/Create Pass")
+
+    for filepath, categories in append_map.items():
+        with bpy.data.libraries.load(filepath, link=False) as (data_from, data_to):
+            for category, names in categories.items():
+                if hasattr(data_to, category):
+                    setattr(data_to, category, names)
+
+    for proxy in procedural_proxies:
+        if uuid_manager.find_datablock_by_uuid(str(proxy.fn_uuid)):
+            continue
+        
         db_type = proxy.properties.get('datablock_type')
         db_name = proxy.properties.get('name', 'unnamed')
+        creation_func = _datablock_creation_map.get(db_type)
+        
+        if not creation_func:
+            continue
+
         datablock = None
+        if db_type == 'OBJECT':
+            data_path = proxy.properties.get('_fn_relationships', {}).get('data')
+            object_data = None
+            if data_path:
+                data_proxy = next((p for p in plan if p.path == data_path), None)
+                if data_proxy:
+                    object_data = uuid_manager.find_datablock_by_uuid(str(data_proxy.fn_uuid))
+            datablock = creation_func(db_name, object_data)
+        
+        elif db_type == 'LIGHT':
+            light_type = proxy.properties.get('type', 'POINT')
+            datablock = creation_func(name=db_name, type=light_type)
 
-        logger.log(f"[Materializer-P1] Attempting to create {db_type} for path {proxy.path}")
+        else:
+            datablock = creation_func(db_name)
 
-        try:
-            if db_type == 'OBJECT':
-                object_data = None
-                if '_fn_relationships' in proxy.properties and 'data' in proxy.properties['_fn_relationships']:
-                    data_path = proxy.properties['_fn_relationships']['data']
-                    logger.log(f"[Materializer-P1] Object {proxy.path} requires data from {data_path}")
-                    # Find the proxy for the data
-                    data_proxy = next((p for p in plan if p.path == data_path), None)
-                    if data_proxy:
-                        # Find the already-materialized datablock for that proxy
-                        object_data = uuid_manager.find_datablock_by_uuid(str(data_proxy.fn_uuid))
-                        if object_data:
-                            logger.log(f"[Materializer-P1] Found materialized data '{object_data.name}' for object {proxy.path}")
-                        else:
-                            logger.log(f"[Materializer-P1] ERROR: Data proxy {data_path} was found, but its datablock is not materialized yet. Check dependency sorting.")
-                    else:
-                        logger.log(f"[Materializer-P1] ERROR: Data path {data_path} not found in plan for object {proxy.path}")
-                
-                datablock = bpy.data.objects.new(db_name, object_data)
-            else:
-                creation_func = _datablock_creation_map.get(db_type)
-                if not creation_func:
-                    logger.log(f"[Materializer-P1] No creation function for type '{db_type}'")
-                    continue
-                
-                creation_args = {'name': db_name}
-                if db_type == 'LIGHT':
-                    creation_args['type'] = proxy.properties.get('type', 'POINT')
-                
-                datablock = creation_func(**creation_args)
+        if db_type == 'MESH' and '_fn_geometry_data' in proxy.properties:
+            geo_data = proxy.properties['_fn_geometry_data']
+            datablock.from_pydata(geo_data.get('vertices', []), geo_data.get('edges', []), geo_data.get('faces', []))
+            datablock.update()
+        
+        if datablock:
+            uuid_manager.set_uuid(datablock, str(proxy.fn_uuid))
 
+    for proxy in plan:
+        if not proxy.properties.get('datablock_type'): continue
+        if uuid_manager.find_datablock_by_uuid(str(proxy.fn_uuid)):
+            continue
+
+        source_info = proxy.properties.get('_fn_source', {})
+        db_name = source_info.get('datablock_name', proxy.properties.get('name'))
+        db_type = source_info.get('datablock_type', proxy.properties.get('datablock_type'))
+        
+        collection_name = constants.FN_TYPE_TO_BLENDER_COLLECTION.get(db_type)
+        collection = getattr(bpy.data, collection_name, None) if collection_name else None
+        if collection:
+            datablock = collection.get(db_name)
             if datablock:
                 uuid_manager.set_uuid(datablock, str(proxy.fn_uuid))
-                logger.log(f"[Materializer-P1] CREATED {db_type}: {datablock.name} (UUID: {proxy.fn_uuid})")
 
-        except Exception as e:
-            logger.log(f"[Materializer-P1] FAILED to create {db_type} for {proxy.path}: {e}")
-
-    # --- Pass 2: Configuration, Snapshot, and Overrides ---
-    logger.log("[Materializer-P2] Starting Configuration, Snapshot, and Overrides Pass")
+    # --- Phase 3: State Application (Base, Snapshot, and Overrides) ---
+    # logger.log("[Materializer-P3] Starting State Application Pass")
+    proxy_map = {p.path: p for p in plan}
     for proxy in plan:
         datablock = uuid_manager.find_datablock_by_uuid(str(proxy.fn_uuid))
         if not datablock:
             continue
 
-        # logger.log(f"[Materializer-P2] Configuring base state for {proxy.path}")
+        # --- 3a: Apply Base State from Nodes ---
         for key, value in proxy.properties.items():
-            if key.startswith('_') or key in ['datablock_type']:
+            if key.startswith('_') or key in ['datablock_type', 'name']:
                 continue
-            
+            #logger.log(f"[Materializer] Attempting to set property '{key}' to '{value}' on Blender datablock '{datablock.name}' (Type: {datablock.bl_rna.identifier})")
             try:
                 utils.set_nested_property(datablock, key, value)
+                #logger.log(f"[Materializer] Successfully set property '{key}' on '{datablock.name}'.")
             except Exception as e:
-                logger.log(f"[Materializer-P2] Could not set base property '{key}' on {datablock.name}: {e}")
+                logger.log(f"[Materializer] Failed to set base property '{key}' on '{datablock.name}': {e}", level='WARNING')
 
-        uuid_str = str(proxy.fn_uuid)
-        initial_state_entry = next((item for item in tree.fn_initial_state_map if item.datablock_uuid == uuid_str), None)
-        if not initial_state_entry:
-            # logger.log(f"[Materializer-P2] Capturing initial state for {datablock.name} ({uuid_str})")
-            initial_state = utils.capture_initial_state(datablock)
-            new_entry = tree.fn_initial_state_map.add()
-            new_entry.datablock_uuid = uuid_str
-            new_entry.state_data_json = json.dumps(initial_state)
+        # --- 3b: Establish Relationships (Parenting and Collections) ---
+        # This must happen *before* snapshotting so the relationships are in the initial state.
+        if isinstance(datablock, bpy.types.Object):
+            # Parenting
+            if proxy.parent:
+                parent_db = uuid_manager.find_datablock_by_uuid(str(proxy.parent.fn_uuid))
+                if parent_db and isinstance(parent_db, bpy.types.Object):
+                    if datablock.parent != parent_db:
+                        datablock.parent = parent_db
+            
+            # Object to Collection Linking
+            collection_paths = proxy.properties.get('_fn_relationships', {}).get('collection_links', [])
+            # First, unlink from all collections this object is currently in
+            for coll in datablock.users_collection:
+                coll.objects.unlink(datablock)
+            
+            # Then, link to the collections specified in the proxy
+            for col_path in collection_paths:
+                col_proxy = proxy_map.get(col_path)
+                if not col_proxy: continue
 
-        override_entry = next((item for item in tree.fn_override_map if item.datablock_uuid == uuid_str), None)
+                col_db = uuid_manager.find_datablock_by_uuid(str(col_proxy.fn_uuid))
+                # col_db can be None if the collection is procedural, which is fine
+
+                target_collection = None
+                if col_proxy.path == '/root':
+                    target_collection = target_scene.collection
+                elif col_db and isinstance(col_db, bpy.types.Scene):
+                    target_collection = col_db.collection
+                elif col_db and isinstance(col_db, bpy.types.Collection):
+                    target_collection = col_db
+                
+                if target_collection and datablock.name not in target_collection.objects:
+                    target_collection.objects.link(datablock)
+            
+            # V17.8: Material Linking
+            relationships = proxy.properties.get('_fn_relationships', {})
+            material_path = relationships.get('active_material')
+            if material_path:
+                material_proxy = proxy_map.get(material_path)
+                if material_proxy:
+                    material_db = uuid_manager.find_datablock_by_uuid(str(material_proxy.fn_uuid))
+                    if material_db and isinstance(material_db, bpy.types.Material):
+                        if datablock.active_material != material_db:
+                            datablock.active_material = material_db
+                            logger.log(f"[Materializer] Set active material for '{datablock.name}' to '{material_db.name}'")
+                    else:
+                        logger.log(f"[Materializer] Could not find material datablock for path: {material_path}", level='WARNING')
+                else:
+                    logger.log(f"[Materializer] Could not find material proxy for path: {material_path}", level='WARNING')
+        
+        elif isinstance(datablock, bpy.types.Collection):
+            # Collection to Collection Linking (Hierarchy)
+            collection_paths = proxy.properties.get('_fn_relationships', {}).get('collection_links', [])
+            for col_path in collection_paths:
+                col_proxy = proxy_map.get(col_path)
+                if not col_proxy: continue
+
+                target_parent_collection = None
+                if col_proxy.path == '/root':
+                    target_parent_collection = target_scene.collection
+                else:
+                    parent_col_db = uuid_manager.find_datablock_by_uuid(str(col_proxy.fn_uuid))
+                    if not parent_col_db: continue
+
+                    if isinstance(parent_col_db, bpy.types.Scene):
+                        target_parent_collection = parent_col_db.collection
+                    elif isinstance(parent_col_db, bpy.types.Collection):
+                        target_parent_collection = parent_col_db
+                
+                if target_parent_collection and datablock.name not in target_parent_collection.children:
+                    target_parent_collection.children.link(datablock)
+
+        elif isinstance(datablock, bpy.types.Scene):
+            relationships = proxy.properties.get('_fn_relationships', {})
+            for rel_type, target_path in relationships.items():
+                if rel_type in ['camera', 'world']:
+                    target_proxy = proxy_map.get(target_path)
+                    if not target_proxy: 
+                        logger.log(f"[Materializer] Could not find target proxy for scene relationship: {target_path}", level='WARNING')
+                        continue
+
+                    target_db = uuid_manager.find_datablock_by_uuid(str(target_proxy.fn_uuid))
+                    if not target_db: 
+                        logger.log(f"[Materializer] Could not find target datablock for scene relationship: {target_path}", level='WARNING')
+                        continue
+                    
+                    try:
+                        setattr(datablock, rel_type, target_db)
+                        logger.log(f"[Materializer] Set scene relationship: {datablock.name}.{rel_type} -> {target_db.name}")
+                    except Exception as e:
+                        logger.log(f"[Materializer] Failed to set scene relationship '{rel_type}' on '{datablock.name}': {e}", level='WARNING')
+
+        # --- 3c: Snapshot the Initial State ---
+        # This "photo" is taken *after* the node-defined state and relationships are applied,
+        # but *before* any user overrides are applied.
+        try:
+            initial_state = utils.capture_datablock_state(datablock)
+            snapshot_entry = tree.fn_initial_state_map.add()
+            snapshot_entry.datablock_uuid = str(proxy.fn_uuid)
+            snapshot_entry.state_data_json = json.dumps(initial_state)
+        except Exception as e:
+            logger.log(f"[Materializer] Failed to snapshot state for '{datablock.name}': {e}", level='ERROR')
+
+        # --- 3d: Apply Persistent User Overrides ---
+        override_entry = next((item for item in tree.fn_override_map if item.datablock_uuid == str(proxy.fn_uuid)), None)
         if override_entry and override_entry.override_data_json:
-            # logger.log(f"[Materializer-P2] Applying overrides for {datablock.name} ({uuid_str})")
             try:
                 overrides = json.loads(override_entry.override_data_json)
+                logger.log(f"[Materializer] Applying {len(overrides)} overrides to '{datablock.name}'")
                 for key, value in overrides.items():
-                    final_value = utils.from_json_safe(value)
-                    utils.set_nested_property(datablock, key, final_value)
+                    try:
+                        utils.set_nested_property(datablock, key, value)
+                    except Exception as e:
+                        logger.log(f"[Materializer] Failed to apply override property '{key}' on '{datablock.name}': {e}", level='WARNING')
             except json.JSONDecodeError:
-                logger.log(f"[Materializer-P2] ERROR: Could not decode override JSON for {uuid_str}")
-            except Exception as e:
-                logger.log(f"[Materializer-P2] ERROR: Failed to apply override for {uuid_str}: {e}")
-
-    # --- Pass 3: Relationships (Parenting and Linking) ---
-    logger.log("[Materializer-P3] Starting Relationship Pass")
-    proxy_map = {p.path: p for p in plan} # Create a map for quick path lookups
-
-    for proxy in plan:
-        from_db = uuid_manager.find_datablock_by_uuid(str(proxy.fn_uuid))
-        if not from_db or not isinstance(from_db, bpy.types.Object):
-            # Parenting logic only applies to Objects.
-            continue
-
-        # --- 1. Infer Parenting from Path Hierarchy ---
-        if '/' in proxy.path.lstrip('/'): # Check if it's not a root-level proxy
-            parent_path = '/' + '/'.join(proxy.path.lstrip('/').split('/')[:-1])
-            if parent_path in proxy_map:
-                parent_proxy = proxy_map[parent_path]
-                parent_db = uuid_manager.find_datablock_by_uuid(str(parent_proxy.fn_uuid))
-                if parent_db and from_db.parent != parent_db:
-                    if isinstance(from_db, bpy.types.Object) and isinstance(parent_db, bpy.types.Object):
-                        logger.log(f"[Materializer-P3] Setting parent for '{from_db.name}' to '{parent_db.name}' based on path hierarchy.")
-                        from_db.parent = parent_db
-                    else:
-                        logger.log(f"[Materializer-P3] WARNING: Cannot parent {type(from_db)} to {type(parent_db)}.")
-
-        # --- 2. Process Other Explicit Relationships (like collection linking) ---
-        if '_fn_relationships' in proxy.properties:
-            for rel_type, target_value in proxy.properties['_fn_relationships'].items():
-                if rel_type == 'data': # Data relationship is handled in Pass 1
-                    continue
-                
-                try:
-                    if rel_type == 'collection_links':
-                        target_paths = target_value if isinstance(target_value, list) else [target_value]
-                        for single_target_path in target_paths:
-                            target_proxy = proxy_map.get(single_target_path)
-                            if not target_proxy:
-                                logger.log(f"[Materializer-P3] Could not find target proxy for collection link path: {single_target_path}")
-                                continue
-                            
-                            target_datablock = uuid_manager.find_datablock_by_uuid(str(target_proxy.fn_uuid))
-                            if not target_datablock:
-                                logger.log(f"[Materializer-P3] Could not find target datablock for collection link path: {single_target_path}")
-                                continue
-
-                            collection_to_link_into = target_datablock
-                            if isinstance(target_datablock, bpy.types.Scene):
-                                collection_to_link_into = target_datablock.collection
-                            
-                            if not isinstance(collection_to_link_into, bpy.types.Collection):
-                                logger.log(f"[Materializer-P3] ERROR: Final target '{collection_to_link_into.name}' is not a collection. Aborting link.")
-                                continue
-
-                            if isinstance(from_db, bpy.types.Object) and from_db.name not in collection_to_link_into.objects:
-                                collection_to_link_into.objects.link(from_db)
-                                logger.log(f"[Materializer-P3] SUCCESS: Linked '{from_db.name}' to collection '{collection_to_link_into.name}'")
-                            elif isinstance(from_db, bpy.types.Collection) and from_db.name not in collection_to_link_into.children:
-                                collection_to_link_into.children.link(from_db)
-                                logger.log(f"[Materializer-P3] SUCCESS: Linked collection '{from_db.name}' to collection '{collection_to_link_into.name}'")
-                except Exception as e:
-                    logger.log(f"[Materializer-P3] FAILED to process '{rel_type}' for '{proxy.path}': {e}")
+                logger.log(f"[Materializer] Could not decode overrides for '{datablock.name}'. Skipping.", level='WARNING')

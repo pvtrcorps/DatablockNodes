@@ -30,12 +30,36 @@ def plan_execution(root_proxy):
                 target_paths = target_value if isinstance(target_value, list) else [target_value]
 
                 for target_path in target_paths:
-                    if target_path in adj:
-                        # The current proxy depends on the target of the relationship
+                    if target_path in proxy_map:
+                        target_proxy = proxy_map[target_path]
+                        
+                        # V17.5 Cycle-Breaker: If the target of a relationship is a descendant of the
+                        # current proxy (e.g., a Scene pointing to a Camera inside it), this is a
+                        # 'soft' dependency. We don't add it to the creation graph to prevent cycles.
+                        # The materializer will handle applying this property after creation.
+                        if target_proxy.is_ancestor(proxy):
+                            logger.log(f"[Planner] Ignoring soft dependency to prevent cycle: {proxy.path} -> {target_path}")
+                            continue
+
+                        # V17.6 Self-Dependency Check (for Grease Pencil)
+                        if proxy == target_proxy:
+                            logger.log(f"[Planner] Ignoring self-dependency to prevent cycle: {proxy.path} -> {target_path}")
+                            continue
+
+                        # The current proxy depends on the target of the relationship (a 'hard' dependency)
                         adj[target_path].append(proxy.path)
                         in_degree[proxy.path] += 1
 
     # 3. Kahn's Algorithm for Topological Sort
+    logger.log(f"[Planner-Debug] --- Dependency Graph ---")
+    for path, dependencies in adj.items():
+        if dependencies:
+            logger.log(f"[Planner-Debug] '{path}' is depended on by: {dependencies}")
+    logger.log(f"[Planner-Debug] --- In-Degrees ---")
+    for path, degree in in_degree.items():
+        logger.log(f"[Planner-Debug] '{path}': {degree}")
+    logger.log(f"[Planner-Debug] --- End of Graph ---")
+
     queue = deque([path for path, degree in in_degree.items() if degree == 0])
     sorted_plan = []
 
@@ -53,7 +77,7 @@ def plan_execution(root_proxy):
         return sorted_plan
     else:
         # Cycle detected, this is an error in the graph structure
-        logger.log(f"[Planner] CRITICAL ERROR: Cycle detected in dependency graph.")
-        logger.log(f"[Planner] Plan length: {len(sorted_plan)}, Total prims: {len(all_proxies)}")
+        logger.log(f"Cycle detected in dependency graph.", level='CRITICAL')
+        logger.log(f"Plan length: {len(sorted_plan)}, Total prims: {len(all_proxies)}", level='CRITICAL')
         # For now, return a partially sorted list to aid debugging
         return [] # Return an empty plan to prevent partial materialization
